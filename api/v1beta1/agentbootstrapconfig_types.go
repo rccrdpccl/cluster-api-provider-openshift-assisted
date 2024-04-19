@@ -17,6 +17,7 @@ limitations under the License.
 package v1beta1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -28,14 +29,16 @@ type AgentBootstrapConfigSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of AgentBootstrapConfig. Edit agentbootstrapconfig_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// InfraEnvRef references the infra env to generate the ISO
+	InfraEnvRef   *corev1.ObjectReference      `json:"infraEnvRef,omitempty"`
+	PullSecretRef *corev1.LocalObjectReference `json:"pullSecretRef,omitempty"`
 }
 
 // AgentBootstrapConfigStatus defines the observed state of AgentBootstrapConfig
 type AgentBootstrapConfigStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	ISODownloadURL string `json:"isoDownloadURL,omitempty"`
 }
 
 //+kubebuilder:object:root=true

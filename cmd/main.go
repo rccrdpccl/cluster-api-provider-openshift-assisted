@@ -34,10 +34,11 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	metal3 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta1"
 	bootstrapv1beta1 "github.com/openshift-assisted/cluster-api-agent/api/v1beta1"
 	"github.com/openshift-assisted/cluster-api-agent/internal/controller"
+	aiv1beta1 "github.com/openshift/assisted-service/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -51,6 +52,7 @@ func init() {
 	utilruntime.Must(metal3.AddToScheme(scheme))
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(bootstrapv1beta1.AddToScheme(scheme))
+	utilruntime.Must(aiv1beta1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -130,6 +132,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentBootstrapConfig")
+		os.Exit(1)
+	}
+	if err = (&controller.InfraEnvReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "InfraEnv")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder
