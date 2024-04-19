@@ -35,10 +35,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	metal3 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta1"
-	bootstrapv1beta1 "github.com/openshift-assisted/cluster-api-agent/api/v1beta1"
-	"github.com/openshift-assisted/cluster-api-agent/internal/controller"
 	aiv1beta1 "github.com/openshift/assisted-service/api/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+
+	bootstrapv1beta1 "github.com/openshift-assisted/cluster-api-agent/api/v1beta1"
+	"github.com/openshift-assisted/cluster-api-agent/internal/controller"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -139,6 +140,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "InfraEnv")
+		os.Exit(1)
+	}
+	if err = (&controller.AgentBootstrapConfigTemplateReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AgentBootstrapConfigTemplate")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder

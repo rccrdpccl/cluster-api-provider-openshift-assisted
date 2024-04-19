@@ -51,6 +51,32 @@ rules:
   - patch
   - update
 - apiGroups:
+  - bootstrap.cluster.x-k8s.io
+  resources:
+  - agentbootstrapconfigtemplates
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - bootstrap.cluster.x-k8s.io
+  resources:
+  - agentbootstrapconfigtemplates/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - bootstrap.cluster.x-k8s.io
+  resources:
+  - agentbootstrapconfigtemplates/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - cluster.x-k8s.io
   resources:
   - machinedeployments
