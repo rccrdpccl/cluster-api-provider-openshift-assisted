@@ -1,0 +1,104 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - agent-install.openshift.io
+  resources:
+  - infraenvs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agent-install.openshift.io
+  resources:
+  - infraenvs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - bootstrap.cluster.x-k8s.io
+  resources:
+  - agentbootstrapconfigs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - bootstrap.cluster.x-k8s.io
+  resources:
+  - agentbootstrapconfigs/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - bootstrap.cluster.x-k8s.io
+  resources:
+  - agentbootstrapconfigs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - machinedeployments
+  - machinedeployments/status
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - controlplane.cluster.x-k8s.io
+  resources:
+  - agentcontrolplanes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - controlplane.cluster.x-k8s.io
+  resources:
+  - agentcontrolplanes/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - controlplane.cluster.x-k8s.io
+  resources:
+  - agentcontrolplanes/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - metal3machinetemplates
+  - metal3machinetemplates/status
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

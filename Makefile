@@ -1,5 +1,10 @@
+# provider to build
+PROVIDER ?= bootstrap
+CONTAINER_REPOSITORY_ORG ?= edge-infrastructure
+CONTAINER_REPOSITORY ?= quay.io/$(CONTAINER_REPOSITORY_ORG)/openshift-capi-agent-$(PROVIDER)
+CONTAINER_TAG ?= latest
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= $(CONTAINER_REPOSITORY):$(CONTAINER_TAG)
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
 
@@ -45,11 +50,11 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	cd $(PROVIDER) && $(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=./config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./$(PROVIDER)/..."
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -80,7 +85,7 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/manager $(PROVIDER)/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
@@ -91,7 +96,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build --build-arg PROVIDER=$(PROVIDER) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -117,8 +122,8 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default > dist/install.yaml
+	cd $(PROVIDER)/config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build $(PROVIDER)/config/default > dist/$(PROVIDER)_install.yaml
 
 ##@ Deployment
 

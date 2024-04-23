@@ -9,6 +9,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.17.1
 	github.com/onsi/gomega v1.32.0
 	github.com/openshift/assisted-service/api v0.0.0
+	github.com/openshift/hive/apis v0.0.0-20220222213051-def9088fdb5a
 	k8s.io/api v0.29.3
 	k8s.io/apimachinery v0.30.0
 	k8s.io/client-go v0.29.3
@@ -19,6 +20,7 @@ require (
 require (
 	github.com/asaskevich/govalidator v0.0.0-20210307081110-f21760c49a8d // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.11.0 // indirect
@@ -36,6 +38,7 @@ require (
 	github.com/go-openapi/swag v0.22.3 // indirect
 	github.com/go-openapi/validate v0.22.0 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
+	github.com/gobuffalo/flect v1.0.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
@@ -57,6 +60,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
+	github.com/openshift/api v0.0.0-20220831183848-09c070622e2c // indirect
 	github.com/openshift/assisted-service v1.0.10-0.20230830164851-6573b5d7021d // indirect
 	github.com/openshift/assisted-service/models v0.0.0 // indirect
 	github.com/openshift/custom-resource-status v1.1.2 // indirect
