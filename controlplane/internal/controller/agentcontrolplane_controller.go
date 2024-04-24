@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"time"
+
 	bootstrapv1beta1 "github.com/openshift-assisted/cluster-api-agent/bootstrap/api/v1beta1"
 	"github.com/openshift/hive/apis/hive/v1/agent"
 	"github.com/pkg/errors"
@@ -31,10 +33,10 @@ import (
 	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/labels/format"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/cluster-api/util"
+	"sigs.k8s.io/cluster-api/util/collections"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -135,33 +137,26 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// Retrieve actually labeled machines instead
-	numMachines := acp.Status.Replicas
+	machines, err := collections.GetFilteredMachinesForCluster(ctx, r.Client, cluster, collections.OwnedMachines(acp))
+	if err != nil {
+		log.Error(err, "couldn't get machines for AgentControlPlane", "name", acp.Name, "namespace", acp.Namespace)
+		return ctrl.Result{}, err
+	}
+
+	// If machines are the same number as desired replicas - do nothing.. or wait for bootstrap config,
+	// Then set status when ready
+	// Then do the workers (in the bootstrap)
+	numMachines := int32(machines.Len()) //acp.Status.Replicas
 	desiredReplicas := acp.Spec.Replicas
-	switch {
-	// We are creating the first replica
-	case numMachines < desiredReplicas && numMachines == 0:
-		// Create new Machine w/ init
-		log.Info("Initializing control plane", "Desired", desiredReplicas, "Existing", numMachines)
-		fallthrough
-		// conditions.MarkFalse(acp, controlplanev1.AvailableCondition, controlplanev1.WaitingForKubeadmInitReason, clusterv1.ConditionSeverityInfo, "")
-		// Start CP:
-		// create infraenv?
-		//return r.initializeControlPlane(ctx, controlPlane)
-	// We are scaling up
-	case numMachines < desiredReplicas && numMachines > 0:
-		// Create a new Machine w/ join
-		log.Info("Scaling up control plane", "Desired", desiredReplicas, "Existing", numMachines)
-		if err := r.cloneConfigsAndGenerateMachine(ctx, cluster, acp, acp.Spec.AgentBootstrapConfigSpec.DeepCopy()); err != nil {
-			log.Info("Error cloning configs", "err", err)
+	machinesToCreate := desiredReplicas - numMachines
+	log.Info("Creating Machines", "number of machines", machinesToCreate)
+	if machinesToCreate > 0 {
+		for i := 0; i < int(machinesToCreate); i++ {
+			log.Info("Scaling up control plane", "Desired", desiredReplicas, "Existing", numMachines)
+			if err := r.cloneConfigsAndGenerateMachine(ctx, cluster, acp, acp.Spec.AgentBootstrapConfigSpec.DeepCopy()); err != nil {
+				log.Info("Error cloning configs", "err", err)
+			}
 		}
-		// deploy machines and bootstrapconfig
-		//return r.scaleUpControlPlane(ctx, controlPlane)
-	// We are scaling down
-	case numMachines > desiredReplicas:
-		log.Info("Scaling down control plane", "Desired", desiredReplicas, "Existing", numMachines)
-		// scale down... maybe not supported?
-		// The last parameter (i.e. machines needing to be rolled out) should always be empty here.
-		//return r.scaleDownControlPlane(ctx, controlPlane, collections.Machines{})
 	}
 	return ctrl.Result{}, nil
 }

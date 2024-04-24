@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+
 	"github.com/openshift-assisted/cluster-api-agent/controlplane/api/v1beta1"
 	hiveext "github.com/openshift/assisted-service/api/hiveextension/v1beta1"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
@@ -103,7 +104,7 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 			Namespace: clusterDeployment.Namespace,
 		},
 		Spec: hivev1.ClusterImageSetSpec{
-			ReleaseImage: acp.Spec.Version,
+			ReleaseImage: acp.Spec.AgentConfigSpec.ReleaseImage,
 		},
 	}
 	if err := r.Client.Create(ctx, imageSet); err != nil {

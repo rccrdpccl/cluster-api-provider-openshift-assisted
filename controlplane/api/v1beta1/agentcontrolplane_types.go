@@ -81,6 +81,8 @@ type AgentControlPlaneConfigSpec struct {
 
 	// Base domain for install cluster
 	BaseDomain string `json:"baseDomain"`
+
+	ReleaseImage string `json:"releaseImage"`
 }
 
 // AgentControlPlaneStatus defines the observed state of AgentControlPlane

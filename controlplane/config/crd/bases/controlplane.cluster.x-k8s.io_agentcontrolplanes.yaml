@@ -211,8 +211,11 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  releaseImage:
+                    type: string
                 required:
                 - baseDomain
+                - releaseImage
                 type: object
               machineTemplate:
                 properties:
