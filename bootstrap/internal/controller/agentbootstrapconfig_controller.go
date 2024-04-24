@@ -119,7 +119,7 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 	if err := r.Client.Get(ctx, client.ObjectKey{Name: infraEnvName, Namespace: config.Namespace}, infraEnv); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Create infraenv
-			err, infraEnv = r.createInfraEnv(ctx, config, infraEnvName)
+			infraEnv, err = r.createInfraEnv(ctx, config, infraEnvName)
 			//TODO: make this more efficient
 			if !apierrors.IsAlreadyExists(err) {
 				log.Error(err, "couldn't create infraenv", "name", config.Name)
@@ -256,7 +256,7 @@ func (r *AgentBootstrapConfigReconciler) FilterMachine(_ context.Context, o clie
 	return result
 }
 
-func (r *AgentBootstrapConfigReconciler) createInfraEnv(ctx context.Context, config *bootstrapv1beta1.AgentBootstrapConfig, infraEnvName string) (error, *aiv1beta1.InfraEnv) {
+func (r *AgentBootstrapConfigReconciler) createInfraEnv(ctx context.Context, config *bootstrapv1beta1.AgentBootstrapConfig, infraEnvName string) (*aiv1beta1.InfraEnv, error) {
 	infraEnv := &aiv1beta1.InfraEnv{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      infraEnvName,
@@ -265,6 +265,11 @@ func (r *AgentBootstrapConfigReconciler) createInfraEnv(ctx context.Context, con
 				agentBootstrapConfigLabel: config.Name,
 			},
 		},
+	}
+
+	clusterName, ok := config.Labels[clusterv1.ClusterNameLabel]
+	if ok {
+		infraEnv.Labels[clusterv1.ClusterNameLabel] = clusterName
 	}
 
 	var pullSecret *corev1.LocalObjectReference
@@ -276,5 +281,5 @@ func (r *AgentBootstrapConfigReconciler) createInfraEnv(ctx context.Context, con
 	infraEnv.Spec = aiv1beta1.InfraEnvSpec{
 		PullSecretRef: pullSecret,
 	}
-	return r.Create(ctx, infraEnv), infraEnv
+	return infraEnv, r.Create(ctx, infraEnv)
 }
