@@ -64,6 +64,7 @@ func (r *InfraEnvReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	log.Info("InfraEnv corresponding has image URL available.", "infra_env_name", infraEnv.Name)
 
+	//TODO: list all agentbootstrapconfig that ref this infraenv
 	agentBootstrapConfig := &bootstrapv1beta1.AgentBootstrapConfig{}
 	name := client.ObjectKey{Namespace: infraEnv.Namespace, Name: configName}
 	if err := r.Client.Get(ctx, name, agentBootstrapConfig); err != nil {
@@ -79,7 +80,7 @@ func (r *InfraEnvReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	// Add ISO to agentBootstrapConfig
+	// Add ISO to agentBootstrapConfig status
 	agentBootstrapConfig.Status.ISODownloadURL = infraEnv.Status.ISODownloadURL
 
 	if err := r.Client.Status().Update(ctx, agentBootstrapConfig); err != nil {

@@ -150,10 +150,14 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	desiredReplicas := acp.Spec.Replicas
 	machinesToCreate := desiredReplicas - numMachines
 	log.Info("Creating Machines", "number of machines", machinesToCreate)
+	log.Info("ACP", "all acp spec", acp.Spec)
 	if machinesToCreate > 0 {
 		for i := 0; i < int(machinesToCreate); i++ {
 			log.Info("Scaling up control plane", "Desired", desiredReplicas, "Existing", numMachines)
-			if err := r.cloneConfigsAndGenerateMachine(ctx, cluster, acp, acp.Spec.AgentBootstrapConfigSpec.DeepCopy()); err != nil {
+			bootstrapSpec := acp.Spec.AgentBootstrapConfigSpec.DeepCopy()
+			log.Info("agent bootstrap config", "spec", bootstrapSpec, "all acp spec", acp.Spec)
+			bootstrapSpec.PullSecretRef = acp.Spec.AgentBootstrapConfigSpec.PullSecretRef.DeepCopy()
+			if err := r.cloneConfigsAndGenerateMachine(ctx, cluster, acp, bootstrapSpec); err != nil {
 				log.Info("Error cloning configs", "err", err)
 			}
 		}
@@ -297,6 +301,7 @@ func (r *AgentControlPlaneReconciler) cloneConfigsAndGenerateMachine(ctx context
 
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Computing desired machines for cluster", "cluster", cluster.Name)
+	log.Info("Bootstrap spec", "pull secret ref", bootstrapSpec.PullSecretRef)
 	// Compute desired Machine
 	machine, err := r.computeDesiredMachine(acp, cluster)
 	if err != nil {
@@ -386,6 +391,7 @@ func (r *AgentControlPlaneReconciler) generateAgentBootstrapConfig(ctx context.C
 		UID:        acp.UID,
 	}
 
+	spec.PullSecretRef = acp.Spec.AgentBootstrapConfigSpec.PullSecretRef
 	bootstrapConfig := &bootstrapv1beta1.AgentBootstrapConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
@@ -396,6 +402,7 @@ func (r *AgentControlPlaneReconciler) generateAgentBootstrapConfig(ctx context.C
 		},
 		Spec: *spec,
 	}
+	//bootstrapConfig.Spec.PullSecretRef = acp.Spec.AgentBootstrapConfigSpec.PullSecretRef
 
 	if err := r.Client.Create(ctx, bootstrapConfig); err != nil {
 		return nil, errors.Wrap(err, "Failed to create bootstrap configuration")

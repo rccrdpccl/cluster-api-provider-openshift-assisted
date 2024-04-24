@@ -4,7 +4,6 @@
 resources:
 - bases/bootstrap.cluster.x-k8s.io_agentbootstrapconfigs.yaml
 - bases/bootstrap.cluster.x-k8s.io_agentbootstrapconfigtemplates.yaml
-- bases/controlplane.cluster.x-k8s.io_agentcontrolplanes.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 apiVersion: kustomize.config.k8s.io/v1beta1

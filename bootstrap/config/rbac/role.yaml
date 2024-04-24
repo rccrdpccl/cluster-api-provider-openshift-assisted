@@ -53,8 +53,8 @@ rules:
 - apiGroups:
   - cluster.x-k8s.io
   resources:
-  - machinedeployments
-  - machinedeployments/status
+  - machines
+  - machines/status
   verbs:
   - create
   - delete
@@ -63,37 +63,11 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - controlplane.cluster.x-k8s.io
-  resources:
-  - agentcontrolplanes
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - controlplane.cluster.x-k8s.io
-  resources:
-  - agentcontrolplanes/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - controlplane.cluster.x-k8s.io
-  resources:
-  - agentcontrolplanes/status
-  verbs:
-  - get
-  - patch
-  - update
 - apiGroups:
   - infrastructure.cluster.x-k8s.io
   resources:
-  - metal3machinetemplates
-  - metal3machinetemplates/status
+  - metal3machines
+  - metal3machines/status
   verbs:
   - create
   - delete
