@@ -96,26 +96,46 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 		}
 		return ctrl.Result{}, err
 	}
-	if config.Spec.InfraEnvRef == nil {
-		// Create infraenv
-		err, infraEnv := r.createInfraEnv(ctx, config)
-		if err != nil {
-			log.Error(err, "couldn't create infraenv", "name", config.Name)
-			return ctrl.Result{}, err
-		}
 
-		if infraEnv != nil {
-			config.Spec.InfraEnvRef = &corev1.ObjectReference{Name: infraEnv.Name, Namespace: infraEnv.Namespace, Kind: "InfraEnv", APIVersion: infraEnv.APIVersion}
-			if err := r.Client.Update(ctx, config); err != nil {
-				log.Error(err, "couldn't update agent config", "name", config.Name)
+	// Get infraenv name given the agentbootstrap config
+	infraEnvName, err := r.GetInfraEnvName(config)
+	if err != nil {
+		log.Error(err, "couldn't get infraenv name for agentbootstrapconfig", "name", config.Name)
+		return ctrl.Result{}, err
+	}
+
+	if infraEnvName == "" {
+		log.Info("no infraenv name for agentbootstrapconfig", "name", config.Name)
+		return ctrl.Result{}, nil
+	}
+
+	// Query for InfraEnv based on name/namespace and set it if it exists or create it if it doesn't
+	infraEnv := &aiv1beta1.InfraEnv{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Name: infraEnvName, Namespace: config.Namespace}, infraEnv); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Create infraenv
+			err, infraEnv = r.createInfraEnv(ctx, config)
+			if err != nil {
+				log.Error(err, "couldn't create infraenv", "name", config.Name)
 				return ctrl.Result{}, err
 			}
+		} else {
+			log.Error(err, "couldn't get infraenv for agentbootstrapconfig", "agentbootstrap config name", config.Name, "infra env name", infraEnv)
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Set infraEnv if not already set
+	if config.Spec.InfraEnvRef == nil {
+		config.Spec.InfraEnvRef = &corev1.ObjectReference{Name: infraEnv.Name, Namespace: infraEnv.Namespace, Kind: "InfraEnv", APIVersion: infraEnv.APIVersion}
+		if err := r.Client.Update(ctx, config); err != nil {
+			log.Error(err, "couldn't update agent config", "name", config.Name)
+			return ctrl.Result{}, err
 		}
 	}
 
 	machineDeployments := clusterv1.MachineDeploymentList{}
-	err := r.Client.List(context.Background(), &machineDeployments, client.InNamespace(req.Namespace))
-	if err != nil {
+	if err := r.Client.List(context.Background(), &machineDeployments, client.InNamespace(req.Namespace)); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
@@ -152,6 +172,20 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 	// TODO(user): your logic here
 
 	return ctrl.Result{}, nil
+}
+
+func (r *AgentBootstrapConfigReconciler) GetInfraEnvName(config *bootstrapv1beta1.AgentBootstrapConfig) (string, error) {
+	nameFormat := "%s-%s"
+	_, isControlPlane := config.Labels[clusterv1.MachineControlPlaneLabel]
+	if isControlPlane {
+		// Name for infraenv control plane
+		clusterName, ok := config.Labels[clusterv1.ClusterNameLabel]
+		if !ok {
+			return "", fmt.Errorf("Cluster name label does not exist on agent bootstrap config %s", config.Name)
+		}
+		return fmt.Sprintf(nameFormat, clusterName, "control-plane"), nil
+	}
+	return "", nil
 }
 
 func (r *AgentBootstrapConfigReconciler) doesMachineDeploymentBelongToUs(machineDeployment clusterv1.MachineDeployment, config *bootstrapv1beta1.AgentBootstrapConfig) bool {
