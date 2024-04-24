@@ -5,10 +5,41 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - bootstrap.cluster.x-k8s.io
+  resources:
+  - agentbootstrapconfigs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - cluster.x-k8s.io
   resources:
   - clusters
   - clusters/status
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - machinepools
+  verbs:
+  - list
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - machines
+  - machines/status
   verbs:
   - create
   - delete
@@ -83,6 +114,30 @@ rules:
   - hive.openshift.io
   resources:
   - clusterimagesets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - metal3machines
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - metal3machinetemplates
   verbs:
   - create
   - delete

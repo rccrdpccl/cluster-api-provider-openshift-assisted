@@ -30,7 +30,7 @@ import (
 	bootstrapv1beta1 "github.com/openshift-assisted/cluster-api-agent/bootstrap/api/v1beta1"
 )
 
-var _ = Describe("AgentBootstrapConfig Controller", func() {
+var _ = Describe("AgentBootstrapConfigSpec Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
 
@@ -43,7 +43,7 @@ var _ = Describe("AgentBootstrapConfig Controller", func() {
 		agentbootstrapconfig := &bootstrapv1beta1.AgentBootstrapConfig{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind AgentBootstrapConfig")
+			By("creating the custom resource for the Kind AgentBootstrapConfigSpec")
 			err := k8sClient.Get(ctx, typeNamespacedName, agentbootstrapconfig)
 			if err != nil && errors.IsNotFound(err) {
 				resource := &bootstrapv1beta1.AgentBootstrapConfig{
@@ -63,7 +63,7 @@ var _ = Describe("AgentBootstrapConfig Controller", func() {
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance AgentBootstrapConfig")
+			By("Cleanup the specific resource instance AgentBootstrapConfigSpec")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {

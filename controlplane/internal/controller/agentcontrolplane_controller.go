@@ -18,21 +18,32 @@ package controller
 
 import (
 	"context"
+	bootstrapv1beta1 "github.com/openshift-assisted/cluster-api-agent/bootstrap/api/v1beta1"
 	"github.com/openshift/hive/apis/hive/v1/agent"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apiserver/pkg/storage/names"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	"sigs.k8s.io/cluster-api/controllers/external"
 	"sigs.k8s.io/cluster-api/util/annotations"
+	"sigs.k8s.io/cluster-api/util/conditions"
+	"sigs.k8s.io/cluster-api/util/labels/format"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/cluster-api/util"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	controlplanev1beta1 "github.com/openshift-assisted/cluster-api-agent/controlplane/api/v1beta1"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
+)
+
+const (
+	agentControlPlaneKind = "AgentControlPlane"
 )
 
 // AgentControlPlaneReconciler reconciles a AgentControlPlane object
@@ -41,6 +52,10 @@ type AgentControlPlaneReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// +kubebuilder:rbac:groups=bootstrap.cluster.x-k8s.io,resources=agentbootstrapconfigs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=metal3machines,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=metal3machinetemplates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hive.openshift.io,resources=clusterimagesets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=extensions.hive.openshift.io,resources=agentclusterinstalls,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=extensions.hive.openshift.io,resources=agentclusterinstalls/status,verbs=get
@@ -50,6 +65,8 @@ type AgentControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=agentcontrolplanes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=agentcontrolplanes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=agentcontrolplanes/finalizers,verbs=update
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machinepools,verbs=list
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -61,7 +78,7 @@ type AgentControlPlaneReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.2/pkg/reconcile
 func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+	log := ctrl.LoggerFrom(ctx)
 
 	acp := &controlplanev1beta1.AgentControlPlane{}
 	if err := r.Client.Get(ctx, req.NamespacedName, acp); err != nil {
@@ -74,18 +91,18 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Fetch the Cluster.
 	cluster, err := util.GetOwnerCluster(ctx, r.Client, acp.ObjectMeta)
 	if err != nil {
-		logger.Error(err, "Failed to retrieve owner Cluster from the API Server")
+		log.Error(err, "Failed to retrieve owner Cluster from the API Server")
 		return ctrl.Result{}, err
 	}
 	if cluster == nil {
-		logger.Info("Cluster Controller has not yet set OwnerRef")
+		log.Info("Cluster Controller has not yet set OwnerRef")
 		return ctrl.Result{Requeue: true, RequeueAfter: 10 * time.Second}, nil
 	}
 	//logger = logger.WithValues("Cluster", klog.KObj(cluster))
 	//ctx = ctrl.LoggerInto(ctx, logger)
 
 	if annotations.IsPaused(cluster, acp) {
-		logger.Info("Reconciliation is paused for this object")
+		log.Info("Reconciliation is paused for this object")
 		return ctrl.Result{}, nil
 	}
 
@@ -94,7 +111,7 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if acp.Spec.AgentConfigSpec.ClusterDeploymentRef == nil {
 		err, clusterDeployment := r.createClusterDeployment(ctx, acp, cluster.Name)
 		if err != nil {
-			logger.Error(
+			log.Error(
 				err,
 				"couldn't create clusterDeployment",
 				"name", clusterDeployment.Name,
@@ -111,13 +128,110 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 				APIVersion: hivev1.SchemeGroupVersion.String(),
 			}
 			if err := r.Client.Update(ctx, acp); err != nil {
-				logger.Error(err, "couldn't update AgentControlPlane", "name", acp.Name, "namespace", acp.Namespace)
+				log.Error(err, "couldn't update AgentControlPlane", "name", acp.Name, "namespace", acp.Namespace)
 				return ctrl.Result{}, err
 			}
 		}
 	}
 
+	// Retrieve actually labeled machines instead
+	numMachines := acp.Status.Replicas
+	desiredReplicas := acp.Spec.Replicas
+	switch {
+	// We are creating the first replica
+	case numMachines < desiredReplicas && numMachines == 0:
+		// Create new Machine w/ init
+		log.Info("Initializing control plane", "Desired", desiredReplicas, "Existing", numMachines)
+		fallthrough
+		// conditions.MarkFalse(acp, controlplanev1.AvailableCondition, controlplanev1.WaitingForKubeadmInitReason, clusterv1.ConditionSeverityInfo, "")
+		// Start CP:
+		// create infraenv?
+		//return r.initializeControlPlane(ctx, controlPlane)
+	// We are scaling up
+	case numMachines < desiredReplicas && numMachines > 0:
+		// Create a new Machine w/ join
+		log.Info("Scaling up control plane", "Desired", desiredReplicas, "Existing", numMachines)
+		if err := r.cloneConfigsAndGenerateMachine(ctx, cluster, acp, acp.Spec.AgentBootstrapConfigSpec.DeepCopy()); err != nil {
+			log.Info("Error cloning configs", "err", err)
+		}
+		// deploy machines and bootstrapconfig
+		//return r.scaleUpControlPlane(ctx, controlPlane)
+	// We are scaling down
+	case numMachines > desiredReplicas:
+		log.Info("Scaling down control plane", "Desired", desiredReplicas, "Existing", numMachines)
+		// scale down... maybe not supported?
+		// The last parameter (i.e. machines needing to be rolled out) should always be empty here.
+		//return r.scaleDownControlPlane(ctx, controlPlane, collections.Machines{})
+	}
 	return ctrl.Result{}, nil
+}
+
+func (r *AgentControlPlaneReconciler) computeDesiredMachine(acp *controlplanev1beta1.AgentControlPlane, cluster *clusterv1.Cluster) (*clusterv1.Machine, error) {
+	var machineName string
+	var machineUID types.UID
+	var version *string
+	annotations := map[string]string{}
+
+	// Creating a new machine
+	machineName = names.SimpleNameGenerator.GenerateName(acp.Name + "-")
+	version = &acp.Spec.Version
+
+	/*
+		// Machine's bootstrap config may be missing ClusterConfiguration if it is not the first machine in the control plane.
+		// We store ClusterConfiguration as annotation here to detect any changes in KCP ClusterConfiguration and rollout the machine if any.
+		// Nb. This annotation is read when comparing the KubeadmConfig to check if a machine needs to be rolled out.
+		clusterConfig, err := json.Marshal(acp.Spec.KubeadmConfigSpec.ClusterConfiguration)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to marshal cluster configuration")
+		}
+		annotations[controlplanev1beta1.AgentClusterConfigurationAnnotation] = string(clusterConfig)
+	*/
+	// Construct the basic Machine.
+	desiredMachine := &clusterv1.Machine{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: clusterv1.GroupVersion.String(),
+			Kind:       "Machine",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			UID:       machineUID,
+			Name:      machineName,
+			Namespace: acp.Namespace,
+			// Note: by setting the ownerRef on creation we signal to the Machine controller that this is not a stand-alone Machine.
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(acp, controlplanev1beta1.GroupVersion.WithKind(agentControlPlaneKind)),
+			},
+			Labels:      map[string]string{},
+			Annotations: map[string]string{},
+		},
+		Spec: clusterv1.MachineSpec{
+			ClusterName: cluster.Name,
+			Version:     version,
+		},
+	}
+
+	// Set the in-place mutable fields.
+	// When we create a new Machine we will just create the Machine with those fields.
+	// When we update an existing Machine will we update the fields on the existing Machine (in-place mutate).
+
+	// Set labels
+	desiredMachine.Labels = controlPlaneMachineLabelsForCluster(acp, cluster.Name)
+
+	// Set annotations
+	// Add the annotations from the MachineTemplate.
+	// Note: we intentionally don't use the map directly to ensure we don't modify the map in KCP.
+	for k, v := range acp.Spec.MachineTemplate.ObjectMeta.Annotations {
+		desiredMachine.Annotations[k] = v
+	}
+	for k, v := range annotations {
+		desiredMachine.Annotations[k] = v
+	}
+
+	// Set other in-place mutable fields
+	desiredMachine.Spec.NodeDrainTimeout = acp.Spec.MachineTemplate.NodeDrainTimeout
+	desiredMachine.Spec.NodeDeletionTimeout = acp.Spec.MachineTemplate.NodeDeletionTimeout
+	desiredMachine.Spec.NodeVolumeDetachTimeout = acp.Spec.MachineTemplate.NodeVolumeDetachTimeout
+
+	return desiredMachine, nil
 }
 
 func (r *AgentControlPlaneReconciler) createClusterDeployment(ctx context.Context, acp *controlplanev1beta1.AgentControlPlane, clusterName string) (error, *hivev1.ClusterDeployment) {
@@ -163,4 +277,142 @@ func (r *AgentControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&controlplanev1beta1.AgentControlPlane{}).
 		Complete(r)
+}
+
+// ControlPlaneMachineLabelsForCluster returns a set of labels to add to a control plane machine for this specific cluster.
+func controlPlaneMachineLabelsForCluster(acp *controlplanev1beta1.AgentControlPlane, clusterName string) map[string]string {
+	labels := map[string]string{}
+
+	// Add the labels from the MachineTemplate.
+	// Note: we intentionally don't use the map directly to ensure we don't modify the map in KCP.
+	for k, v := range acp.Spec.MachineTemplate.ObjectMeta.Labels {
+		labels[k] = v
+	}
+
+	// Always force these labels over the ones coming from the spec.
+	labels[clusterv1.ClusterNameLabel] = clusterName
+	labels[clusterv1.MachineControlPlaneLabel] = ""
+	// Note: MustFormatValue is used here as the label value can be a hash if the control plane name is longer than 63 characters.
+	labels[clusterv1.MachineControlPlaneNameLabel] = format.MustFormatValue(acp.Name)
+	return labels
+}
+
+func (r *AgentControlPlaneReconciler) cloneConfigsAndGenerateMachine(ctx context.Context, cluster *clusterv1.Cluster, acp *controlplanev1beta1.AgentControlPlane, bootstrapSpec *bootstrapv1beta1.AgentBootstrapConfigSpec) error {
+	var errs []error
+
+	log := ctrl.LoggerFrom(ctx)
+	log.Info("Computing desired machines for cluster", "cluster", cluster.Name)
+	// Compute desired Machine
+	machine, err := r.computeDesiredMachine(acp, cluster)
+	if err != nil {
+		return errors.Wrap(err, "failed to create Machine: failed to compute desired Machine")
+	}
+
+	// Since the cloned resource should eventually have a controller ref for the Machine, we create an
+	// OwnerReference here without the Controller field set
+	infraCloneOwner := &metav1.OwnerReference{
+		APIVersion: controlplanev1beta1.GroupVersion.String(),
+		Kind:       agentControlPlaneKind,
+		Name:       acp.Name,
+		UID:        acp.UID,
+	}
+
+	// Clone the infrastructure template
+	infraRef, err := external.CreateFromTemplate(ctx, &external.CreateFromTemplateInput{
+		Client:      r.Client,
+		TemplateRef: &acp.Spec.MachineTemplate.InfrastructureRef,
+		Namespace:   acp.Namespace,
+		Name:        machine.Name,
+		OwnerRef:    infraCloneOwner,
+		ClusterName: cluster.Name,
+		Labels:      controlPlaneMachineLabelsForCluster(acp, cluster.Name),
+		Annotations: acp.Spec.MachineTemplate.ObjectMeta.Annotations,
+	})
+	if err != nil {
+		// Safe to return early here since no resources have been created yet.
+		conditions.MarkFalse(acp, controlplanev1beta1.MachinesCreatedCondition, controlplanev1beta1.InfrastructureTemplateCloningFailedReason,
+			clusterv1.ConditionSeverityError, err.Error())
+		return errors.Wrap(err, "failed to clone infrastructure template")
+	}
+	machine.Spec.InfrastructureRef = *infraRef
+
+	log.Info("Generating control plane bootstrap config for cluster", "cluster", cluster.Name)
+	// Clone the bootstrap configuration
+	bootstrapRef, err := r.generateAgentBootstrapConfig(ctx, acp, cluster, bootstrapSpec, machine.Name)
+	if err != nil {
+		log.Info("Error generating control plane bootstrap config", "err", err)
+		conditions.MarkFalse(acp, controlplanev1beta1.MachinesCreatedCondition, controlplanev1beta1.BootstrapTemplateCloningFailedReason,
+			clusterv1.ConditionSeverityError, err.Error())
+		errs = append(errs, errors.Wrap(err, "failed to generate bootstrap config"))
+	}
+	log.Info("Checking errors", "cluster", cluster.Name, "errors", len(errs))
+	// Only proceed to generating the Machine if we haven't encountered an error
+	if len(errs) == 0 {
+		machine.Spec.Bootstrap.ConfigRef = bootstrapRef
+		log.Info("Creating machine for cluster...", "cluster", cluster.Name)
+		if err := r.createMachine(ctx, acp, machine); err != nil {
+			log.Info("Error creating machine config", "err", err)
+			conditions.MarkFalse(acp, controlplanev1beta1.MachinesCreatedCondition, controlplanev1beta1.MachineGenerationFailedReason,
+				clusterv1.ConditionSeverityError, err.Error())
+			errs = append(errs, errors.Wrap(err, "failed to create Machine"))
+		}
+	}
+	/*
+		// If we encountered any errors, attempt to clean up any dangling resources
+		if len(errs) > 0 {
+			if err := r.cleanupFromGeneration(ctx, infraRef, bootstrapRef); err != nil {
+				errs = append(errs, errors.Wrap(err, "failed to cleanup generated resources"))
+			}
+
+			return kerrors.NewAggregate(errs)
+		}
+	*/
+	return nil
+}
+
+func (r *AgentControlPlaneReconciler) createMachine(ctx context.Context, acp *controlplanev1beta1.AgentControlPlane, machine *clusterv1.Machine) error {
+	// TODO : add cache everywhere
+	if err := r.Client.Create(ctx, machine); err != nil {
+		return errors.Wrap(err, "failed to create Machine")
+	}
+
+	// Remove the annotation tracking that a remediation is in progress (the remediation completed when
+	// the replacement machine has been created above).
+	// delete(acp.Annotations, controlplanev1.RemediationInProgressAnnotation)
+	return nil
+}
+
+func (r *AgentControlPlaneReconciler) generateAgentBootstrapConfig(ctx context.Context, acp *controlplanev1beta1.AgentControlPlane, cluster *clusterv1.Cluster, spec *bootstrapv1beta1.AgentBootstrapConfigSpec, name string) (*corev1.ObjectReference, error) {
+	// Create an owner reference without a controller reference because the owning controller is the machine controller
+	owner := metav1.OwnerReference{
+		APIVersion: controlplanev1beta1.GroupVersion.String(),
+		Kind:       agentControlPlaneKind,
+		Name:       acp.Name,
+		UID:        acp.UID,
+	}
+
+	bootstrapConfig := &bootstrapv1beta1.AgentBootstrapConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       acp.Namespace,
+			Labels:          controlPlaneMachineLabelsForCluster(acp, cluster.Name),
+			Annotations:     acp.Spec.MachineTemplate.ObjectMeta.Annotations,
+			OwnerReferences: []metav1.OwnerReference{owner},
+		},
+		Spec: *spec,
+	}
+
+	if err := r.Client.Create(ctx, bootstrapConfig); err != nil {
+		return nil, errors.Wrap(err, "Failed to create bootstrap configuration")
+	}
+
+	bootstrapRef := &corev1.ObjectReference{
+		APIVersion: bootstrapv1beta1.GroupVersion.String(),
+		Kind:       "AgentBootstrapConfigSpec",
+		Name:       bootstrapConfig.GetName(),
+		Namespace:  bootstrapConfig.GetNamespace(),
+		UID:        bootstrapConfig.GetUID(),
+	}
+
+	return bootstrapRef, nil
 }

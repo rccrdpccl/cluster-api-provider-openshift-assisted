@@ -103,7 +103,7 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 			Namespace: clusterDeployment.Namespace,
 		},
 		Spec: hivev1.ClusterImageSetSpec{
-			ReleaseImage: acp.Spec.ReleaseImage,
+			ReleaseImage: acp.Spec.Version,
 		},
 	}
 	if err := r.Client.Create(ctx, imageSet); err != nil {

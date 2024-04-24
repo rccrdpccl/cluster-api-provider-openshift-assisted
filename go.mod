@@ -10,8 +10,10 @@ require (
 	github.com/onsi/gomega v1.32.0
 	github.com/openshift/assisted-service/api v0.0.0
 	github.com/openshift/hive/apis v0.0.0-20220222213051-def9088fdb5a
+	github.com/pkg/errors v0.9.1
 	k8s.io/api v0.29.3
 	k8s.io/apimachinery v0.30.0
+	k8s.io/apiserver v0.29.3
 	k8s.io/client-go v0.29.3
 	sigs.k8s.io/cluster-api v1.7.0
 	sigs.k8s.io/controller-runtime v0.17.3
@@ -64,7 +66,6 @@ require (
 	github.com/openshift/assisted-service v1.0.10-0.20230830164851-6573b5d7021d // indirect
 	github.com/openshift/assisted-service/models v0.0.0 // indirect
 	github.com/openshift/custom-resource-status v1.1.2 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_golang v1.18.0 // indirect
 	github.com/prometheus/client_model v0.5.0 // indirect
 	github.com/prometheus/common v0.45.0 // indirect

@@ -14,7 +14,8 @@ RUN go mod download
 
 # Copy the go source
 COPY ${PROVIDER}/main.go ${PROVIDER}/main.go
-COPY ${PROVIDER}/api/ ${PROVIDER}/api/
+COPY bootstrap/api/ bootstrap/api/
+COPY controlplane/api/ controlplane/api/
 COPY ${PROVIDER}/internal/controller/ ${PROVIDER}/internal/controller/
 
 # Build

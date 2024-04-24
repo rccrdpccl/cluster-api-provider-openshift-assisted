@@ -36,7 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 )
 
-// AgentBootstrapConfigReconciler reconciles a AgentBootstrapConfig object
+// AgentBootstrapConfigReconciler reconciles a AgentBootstrapConfigSpec object
 type AgentBootstrapConfigReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -80,7 +80,7 @@ func (r *AgentBootstrapConfigReconciler) getMachineTemplate(ctx context.Context,
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // TODO(user): Modify the Reconcile function to compare the state specified by
-// the AgentBootstrapConfig object against the actual cluster state, and then
+// the AgentBootstrapConfigSpec object against the actual cluster state, and then
 // perform operations to make the cluster state reflect the state specified by
 // the user.
 //
@@ -156,7 +156,7 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 
 func (r *AgentBootstrapConfigReconciler) doesMachineDeploymentBelongToUs(machineDeployment clusterv1.MachineDeployment, config *bootstrapv1beta1.AgentBootstrapConfig) bool {
 	return machineDeployment.Spec.Template.Spec.Bootstrap.ConfigRef.Name == config.Name &&
-		machineDeployment.Spec.Template.Spec.Bootstrap.ConfigRef.GroupVersionKind() == bootstrapv1beta1.GroupVersion.WithKind("AgentBootstrapConfig")
+		machineDeployment.Spec.Template.Spec.Bootstrap.ConfigRef.GroupVersionKind() == bootstrapv1beta1.GroupVersion.WithKind("AgentBootstrapConfigSpec")
 
 }
 
@@ -179,7 +179,7 @@ func (r *AgentBootstrapConfigReconciler) FilterMachineDeployment(_ context.Conte
 	}
 	// m.Spec.ClusterName
 
-	if m.Spec.Template.Spec.Bootstrap.ConfigRef != nil && m.Spec.Template.Spec.Bootstrap.ConfigRef.GroupVersionKind() == bootstrapv1beta1.GroupVersion.WithKind("AgentBootstrapConfig") {
+	if m.Spec.Template.Spec.Bootstrap.ConfigRef != nil && m.Spec.Template.Spec.Bootstrap.ConfigRef.GroupVersionKind() == bootstrapv1beta1.GroupVersion.WithKind("AgentBootstrapConfigSpec") {
 		name := client.ObjectKey{Namespace: m.Namespace, Name: m.Spec.Template.Spec.Bootstrap.ConfigRef.Name}
 		result = append(result, ctrl.Request{NamespacedName: name})
 	}

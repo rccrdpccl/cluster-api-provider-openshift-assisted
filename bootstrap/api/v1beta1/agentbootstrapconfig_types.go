@@ -26,9 +26,7 @@ import (
 
 // AgentBootstrapConfigSpec defines the desired state of AgentBootstrapConfig
 type AgentBootstrapConfigSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
+	// Here we can add details to configure infraenv
 	// InfraEnvRef references the infra env to generate the ISO
 	InfraEnvRef   *corev1.ObjectReference      `json:"infraEnvRef,omitempty"`
 	PullSecretRef *corev1.LocalObjectReference `json:"pullSecretRef,omitempty"`

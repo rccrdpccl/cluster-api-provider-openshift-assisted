@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	bootstrapv1beta1 "github.com/openshift-assisted/cluster-api-agent/bootstrap/api/v1beta1"
 	hiveext "github.com/openshift/assisted-service/api/hiveextension/v1beta1"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
 	"os"
@@ -53,6 +54,7 @@ func init() {
 	utilruntime.Must(clusterv1.AddToScheme(scheme))
 	utilruntime.Must(hivev1.AddToScheme(scheme))
 	utilruntime.Must(hiveext.AddToScheme(scheme))
+	utilruntime.Must(bootstrapv1beta1.AddToScheme(scheme))
 
 	//+kubebuilder:scaffold:scheme
 }
