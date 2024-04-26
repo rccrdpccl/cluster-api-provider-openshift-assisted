@@ -93,6 +93,7 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 	log := ctrl.LoggerFrom(ctx)
 
 	config := &bootstrapv1beta1.AgentBootstrapConfig{}
+	log.Info("Getting AgentBootstrapConfig", "namespacedname", req.NamespacedName)
 	if err := r.Client.Get(ctx, req.NamespacedName, config); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -108,6 +109,7 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 		log.Error(err, "couldn't get infraenv name for agentbootstrapconfig", "name", config.Name)
 		return ctrl.Result{}, err
 	}
+	log.Info("computed infraEnvName", "name", infraEnvName)
 
 	if infraEnvName == "" {
 		log.Info("no infraenv name for agentbootstrapconfig", "name", config.Name)
@@ -120,6 +122,7 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 		if apierrors.IsNotFound(err) {
 			// Create infraenv
 			infraEnv, err = r.createInfraEnv(ctx, config, infraEnvName)
+			log.Info("Created infra env", "name", infraEnv.Name, "namespace", infraEnv.Namespace)
 			//TODO: make this more efficient
 			if !apierrors.IsAlreadyExists(err) {
 				log.Error(err, "couldn't create infraenv", "name", config.Name)

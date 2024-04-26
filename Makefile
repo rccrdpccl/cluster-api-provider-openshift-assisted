@@ -91,6 +91,23 @@ build: manifests generate fmt vet ## Build manager binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
+.PHONY: provider-docker-build
+provider-docker-build:
+	$(MAKE) docker-build IMG=quay.io/$(CONTAINER_REPOSITORY_ORG)/openshift-capi-agent-$(PROVIDER):$(CONTAINER_TAG)
+	$(MAKE) docker-push IMG=quay.io/$(CONTAINER_REPOSITORY_ORG)/openshift-capi-agent-$(PROVIDER):$(CONTAINER_TAG)
+
+.PHONY: bootstrap-docker-build
+bootstrap-docker-build:
+	$(MAKE) provider-docker-build PROVIDER=bootstrap
+
+.PHONY: controlplane-docker-build
+controlplane-docker-build:
+	$(MAKE) provider-docker-build PROVIDER=controlplane
+
+
+.PHONY: docker-build-all
+docker-build-all: bootstrap-docker-build controlplane-docker-build
+
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
