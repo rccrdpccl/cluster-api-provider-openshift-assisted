@@ -19,6 +19,26 @@ rules:
 - apiGroups:
   - agent-install.openshift.io
   resources:
+  - agents
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agent-install.openshift.io
+  resources:
+  - agents/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - agent-install.openshift.io
+  resources:
   - infraenvs
   verbs:
   - create

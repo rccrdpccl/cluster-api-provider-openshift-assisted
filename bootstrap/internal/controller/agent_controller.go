@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+
 	"github.com/openshift-assisted/cluster-api-agent/bootstrap/api/v1beta1"
 	aiv1beta1 "github.com/openshift/assisted-service/api/v1beta1"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
@@ -11,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// InfraEnvReconciler reconciles a InfraEnv object
+// AgentReconciler reconciles an Agent object
 type AgentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -24,8 +25,6 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// +kubebuilder:rbac:groups=agent-install.openshift.io,resources=agents,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agent-install.openshift.io,resources=agents/status,verbs=get;update;patch
 func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
