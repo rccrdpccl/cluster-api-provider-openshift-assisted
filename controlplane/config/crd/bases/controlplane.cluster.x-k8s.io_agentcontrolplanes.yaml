@@ -147,6 +147,8 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  sshAuthorizedKey:
+                    type: string
                 type: object
               agentConfigSpec:
                 description: AgentConfigSpec specs for the AgentConfig
@@ -212,6 +214,10 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   releaseImage:
+                    type: string
+                  sshAuthorizedKey:
+                    description: SSHAuthorizedKey ssh key for accessing the cluster
+                      nodes after reboot
                     type: string
                 required:
                 - baseDomain

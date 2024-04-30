@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	hivev1 "github.com/openshift/hive/apis/hive/v1"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -54,6 +55,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(bootstrapv1beta1.AddToScheme(scheme))
 	utilruntime.Must(aiv1beta1.AddToScheme(scheme))
+	utilruntime.Must(hivev1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 

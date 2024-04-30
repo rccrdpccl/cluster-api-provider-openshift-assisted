@@ -132,6 +132,8 @@ spec:
                             type: string
                         type: object
                         x-kubernetes-map-type: atomic
+                      sshAuthorizedKey:
+                        type: string
                     type: object
                 type: object
             required:

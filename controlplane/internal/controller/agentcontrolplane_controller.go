@@ -79,7 +79,7 @@ type AgentControlPlaneReconciler struct {
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.2/pkg/reconcile
-func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, rerr error) {
 	log := ctrl.LoggerFrom(ctx)
 
 	acp := &controlplanev1beta1.AgentControlPlane{}
@@ -89,8 +89,11 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		return ctrl.Result{}, err
 	}
-
-	// Fetch the Cluster.
+	defer func() {
+		if rerr = r.Client.Update(ctx, acp); rerr != nil {
+			log.Error(rerr, "couldn't update AgentControlPlane", "name", acp.Name, "namespace", acp.Namespace)
+		}
+	}()
 	cluster, err := util.GetOwnerCluster(ctx, r.Client, acp.ObjectMeta)
 	if err != nil {
 		log.Error(err, "Failed to retrieve owner Cluster from the API Server")
@@ -100,8 +103,6 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		log.Info("Cluster Controller has not yet set OwnerRef")
 		return ctrl.Result{Requeue: true, RequeueAfter: 10 * time.Second}, nil
 	}
-	//logger = logger.WithValues("Cluster", klog.KObj(cluster))
-	//ctx = ctrl.LoggerInto(ctx, logger)
 
 	if annotations.IsPaused(cluster, acp) {
 		log.Info("Reconciliation is paused for this object")
@@ -128,10 +129,6 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 				Namespace:  clusterDeployment.Namespace,
 				Kind:       "ClusterDeployment",
 				APIVersion: hivev1.SchemeGroupVersion.String(),
-			}
-			if err := r.Client.Update(ctx, acp); err != nil {
-				log.Error(err, "couldn't update AgentControlPlane", "name", acp.Name, "namespace", acp.Namespace)
-				return ctrl.Result{}, err
 			}
 		}
 	}
@@ -162,7 +159,7 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			}
 		}
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, rerr
 }
 
 func (r *AgentControlPlaneReconciler) computeDesiredMachine(acp *controlplanev1beta1.AgentControlPlane, cluster *clusterv1.Cluster) (*clusterv1.Machine, error) {
@@ -245,6 +242,7 @@ func (r *AgentControlPlaneReconciler) createClusterDeployment(ctx context.Contex
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      acp.Name,
 			Namespace: acp.Namespace,
+			Labels:    controlPlaneMachineLabelsForCluster(acp, clusterName),
 		},
 		Spec: hivev1.ClusterDeploymentSpec{
 			ClusterName: clusterName,
@@ -335,7 +333,6 @@ func (r *AgentControlPlaneReconciler) cloneConfigsAndGenerateMachine(ctx context
 		return errors.Wrap(err, "failed to clone infrastructure template")
 	}
 	machine.Spec.InfrastructureRef = *infraRef
-
 	log.Info("Generating control plane bootstrap config for cluster", "cluster", cluster.Name)
 	// Clone the bootstrap configuration
 	bootstrapRef, err := r.generateAgentBootstrapConfig(ctx, acp, cluster, bootstrapSpec, machine.Name)
@@ -410,7 +407,7 @@ func (r *AgentControlPlaneReconciler) generateAgentBootstrapConfig(ctx context.C
 
 	bootstrapRef := &corev1.ObjectReference{
 		APIVersion: bootstrapv1beta1.GroupVersion.String(),
-		Kind:       "AgentBootstrapConfigSpec",
+		Kind:       "AgentBootstrapConfig",
 		Name:       bootstrapConfig.GetName(),
 		Namespace:  bootstrapConfig.GetNamespace(),
 		UID:        bootstrapConfig.GetUID(),

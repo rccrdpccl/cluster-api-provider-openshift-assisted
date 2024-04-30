@@ -76,6 +76,9 @@ type AgentControlPlaneConfigSpec struct {
 	// PullSecretRef references pull secret necessary for the cluster installation
 	PullSecretRef *corev1.LocalObjectReference `json:"pullSecretRef,omitempty"`
 
+	// SSHAuthorizedKey ssh key for accessing the cluster nodes after reboot
+	SSHAuthorizedKey string `json:"sshAuthorizedKey,omitempty"`
+
 	// ClusterDeploymentRef references the ClusterDeployment used to create the cluster
 	ClusterDeploymentRef *corev1.ObjectReference `json:"clusterDeploymentRef,omitempty"`
 

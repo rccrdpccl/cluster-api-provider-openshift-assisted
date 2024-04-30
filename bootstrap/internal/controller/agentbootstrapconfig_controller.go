@@ -19,6 +19,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	hivev1 "github.com/openshift/hive/apis/hive/v1"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
+	"sigs.k8s.io/cluster-api/util/conditions"
+	"sigs.k8s.io/cluster-api/util/patch"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -71,6 +75,8 @@ func (r *AgentBootstrapConfigReconciler) getMachineTemplate(ctx context.Context,
 	return nil
 }
 
+// +kubebuilder:rbac:groups=hive.openshift.io,resources=clusterdeployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch;create;update;patch;delete
 //metal3machinetemplates" in API group "infrastructure.cluster.x-k8s.io"
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=metal3machines;metal3machines/status,verbs=get;list;watch;create;update;patch;delete
@@ -89,7 +95,8 @@ func (r *AgentBootstrapConfigReconciler) getMachineTemplate(ctx context.Context,
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.2/pkg/reconcile
-func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, rerr error) {
+
 	log := ctrl.LoggerFrom(ctx)
 
 	config := &bootstrapv1beta1.AgentBootstrapConfig{}
@@ -100,11 +107,44 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 		}
 		return ctrl.Result{}, err
 	}
+	// Initialize the patch helper.
+	patchHelper, err := patch.NewHelper(config, r.Client)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
-	// Get infraenv name given the agentbootstrap config
-	// 1 infra env per machine deployment
-	// 1 infra env per control plane cluster
-	infraEnvName, err := r.GetInfraEnvName(config)
+	// Attempt to Patch the KubeadmConfig object and status after each reconciliation if no error occurs.
+	defer func() {
+		// always update the readyCondition; the summary is represented using the "1 of x completed" notation.
+		conditions.SetSummary(config,
+			conditions.WithConditions(
+				bootstrapv1beta1.DataSecretAvailableCondition,
+			),
+		)
+		// Patch ObservedGeneration only if the reconciliation completed successfully
+		patchOpts := []patch.Option{}
+		if rerr == nil {
+			patchOpts = append(patchOpts, patch.WithStatusObservedGeneration{})
+		}
+		if err := patchHelper.Patch(ctx, config, patchOpts...); err != nil {
+			rerr = kerrors.NewAggregate([]error{rerr, err})
+		}
+	}()
+
+	clusterName, ok := config.Labels[clusterv1.ClusterNameLabel]
+	if !ok {
+		return ctrl.Result{}, fmt.Errorf("cluster name label not found in config")
+	}
+	clusterDeployments := hivev1.ClusterDeploymentList{}
+	if err := r.Client.List(ctx, &clusterDeployments, client.MatchingLabels{clusterv1.ClusterNameLabel: clusterName}); err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(clusterDeployments.Items) != 1 {
+		log.Info("found more or less than 1 cluster deployments. exactly one is needed", "cluster_name", clusterName)
+	}
+
+	clusterDeployment := clusterDeployments.Items[0]
+	infraEnvName, err := getInfraEnvName(config)
 	if err != nil {
 		log.Error(err, "couldn't get infraenv name for agentbootstrapconfig", "name", config.Name)
 		return ctrl.Result{}, err
@@ -119,19 +159,18 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 	// Query for InfraEnv based on name/namespace and set it if it exists or create it if it doesn't
 	infraEnv := &aiv1beta1.InfraEnv{}
 	if err := r.Client.Get(ctx, client.ObjectKey{Name: infraEnvName, Namespace: config.Namespace}, infraEnv); err != nil {
-		if apierrors.IsNotFound(err) {
-			// Create infraenv
-			infraEnv, err = r.createInfraEnv(ctx, config, infraEnvName)
-			log.Info("Created infra env", "name", infraEnv.Name, "namespace", infraEnv.Namespace)
-			//TODO: make this more efficient
-			if !apierrors.IsAlreadyExists(err) {
-				log.Error(err, "couldn't create infraenv", "name", config.Name)
-				return ctrl.Result{}, err
-			}
-		} else {
+		if !apierrors.IsNotFound(err) {
 			log.Error(err, "couldn't get infraenv for agentbootstrapconfig", "agentbootstrap config name", config.Name, "infra env name", infraEnv)
 			return ctrl.Result{}, err
 		}
+
+		infraEnv, err = r.createInfraEnv(ctx, config, infraEnvName, &clusterDeployment)
+		//TODO: make this more efficient
+		if !apierrors.IsAlreadyExists(err) {
+			log.Error(err, "couldn't create infraenv", "name", config.Name)
+			return ctrl.Result{}, err
+		}
+		log.Info("Created infra env", "name", infraEnv.Name, "namespace", infraEnv.Namespace)
 	}
 
 	// Set infraEnv if not already set
@@ -164,7 +203,6 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 
 	// TODO: check if it's a control plane or worker
 	log.Info("Found metal3 machine owned by machine, adding infraenv ISO URL", "name", metal3Machine.Name, "namespace", metal3Machine.Namespace)
-	// Add infra env ISO URL from status to Metal3 Machine
 	// TODO: check if URL changes and only update if changed
 	metal3Machine.Spec.Image.URL = config.Status.ISODownloadURL
 	if err := r.Client.Update(ctx, metal3Machine); err != nil {
@@ -172,53 +210,41 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Finished adding URLs to metal3 machines")
-
-	//	machine.Spec.Image.URL = config.Status.ISODownloadURL
-
-	/* machineDeployments := clusterv1.MachineDeploymentList{}
-	if err := r.Client.List(context.Background(), &machineDeployments, client.InNamespace(req.Namespace)); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
+	log.Info("Added ISO URLs to metal3 machines", "machine", metal3Machine.Name, "namespace", metal3Machine.Namespace)
+	// create secret
+	secret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: config.Namespace, Name: config.Name}, secret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "couldn't get secret", "name", config.Name, "namespace", config.Namespace)
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
+		secret.Name = config.Name
+		secret.Namespace = config.Namespace
+
+		if err := r.Client.Create(ctx, secret); err != nil {
+			log.Error(err, "couldn't create secret", "name", config.Name, "namespace", config.Namespace)
+			return ctrl.Result{}, err
+		}
 	}
 
-	for _, md := range machineDeployments.Items {
-		if !r.doesMachineDeploymentBelongToUs(md, config) {
-			continue
-		}
-		log.Info("found machine deployment", "name", md.Name, "namespace", md.Namespace)
-		machineTemplate := r.getMachineTemplate(ctx, md)
-		if machineTemplate == nil {
-			log.Info("Machine template not metal3 or not found")
-			continue
-		}
-		log.Info("found machine template", "name", machineTemplate.Name, "namespace", machineTemplate.Namespace)
-
-	} */
-
-	// agentboostrapconfig
-	// machinedeployment
-	// infraref (machinetemplate)
-
-	// TODO(user): your logic here
-
-	return ctrl.Result{}, nil
+	config.Status.Ready = true
+	config.Status.DataSecretName = &config.Name
+	conditions.MarkTrue(config, bootstrapv1beta1.DataSecretAvailableCondition)
+	return ctrl.Result{}, rerr
 }
 
-func (r *AgentBootstrapConfigReconciler) GetInfraEnvName(config *bootstrapv1beta1.AgentBootstrapConfig) (string, error) {
+func getInfraEnvName(config *bootstrapv1beta1.AgentBootstrapConfig) (string, error) {
 	nameFormat := "%s-%s"
+
 	clusterName, ok := config.Labels[clusterv1.ClusterNameLabel]
 	if !ok {
 		return "", fmt.Errorf("cluster name label does not exist on agent bootstrap config %s", config.Name)
 	}
-	_, isControlPlane := config.Labels[clusterv1.MachineControlPlaneLabel]
-	if isControlPlane {
+
+	if _, isControlPlane := config.Labels[clusterv1.MachineControlPlaneLabel]; isControlPlane {
 		return fmt.Sprintf(nameFormat, clusterName, "control-plane"), nil
 	}
 
-	// Otherwise get machine deployment name
 	machineDeploymentName, ok := config.Labels[clusterv1.MachineDeploymentNameLabel]
 	if !ok {
 		return "", fmt.Errorf("machine deployment name label does not exist on agent bootstrap config %s", config.Name)
@@ -259,7 +285,7 @@ func (r *AgentBootstrapConfigReconciler) FilterMachine(_ context.Context, o clie
 	return result
 }
 
-func (r *AgentBootstrapConfigReconciler) createInfraEnv(ctx context.Context, config *bootstrapv1beta1.AgentBootstrapConfig, infraEnvName string) (*aiv1beta1.InfraEnv, error) {
+func (r *AgentBootstrapConfigReconciler) createInfraEnv(ctx context.Context, config *bootstrapv1beta1.AgentBootstrapConfig, infraEnvName string, clusterDeployment *hivev1.ClusterDeployment) (*aiv1beta1.InfraEnv, error) {
 	infraEnv := &aiv1beta1.InfraEnv{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      infraEnvName,
@@ -282,7 +308,12 @@ func (r *AgentBootstrapConfigReconciler) createInfraEnv(ctx context.Context, con
 		//TODO: create logic for placeholder pull secret
 	}
 	infraEnv.Spec = aiv1beta1.InfraEnvSpec{
-		PullSecretRef: pullSecret,
+		ClusterRef: &aiv1beta1.ClusterReference{
+			Name:      clusterDeployment.Name,
+			Namespace: clusterDeployment.Namespace,
+		},
+		PullSecretRef:    pullSecret,
+		SSHAuthorizedKey: config.Spec.SSHAuthorizedKey,
 	}
 	return infraEnv, r.Create(ctx, infraEnv)
 }

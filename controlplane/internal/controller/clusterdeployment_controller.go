@@ -125,7 +125,8 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 			ProvisionRequirements: hiveext.ProvisionRequirements{
 				ControlPlaneAgents: int(acp.Spec.Replicas),
 			},
-			ImageSetRef: &hivev1.ClusterImageSetReference{Name: imageSet.Name},
+			SSHPublicKey: acp.Spec.AgentConfigSpec.SSHAuthorizedKey,
+			ImageSetRef:  &hivev1.ClusterImageSetReference{Name: imageSet.Name},
 		},
 	}
 	if err := r.Client.Create(ctx, agentClusterInstall); err != nil {

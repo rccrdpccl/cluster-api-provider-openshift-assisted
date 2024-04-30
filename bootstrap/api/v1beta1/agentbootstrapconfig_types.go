@@ -19,6 +19,7 @@ package v1beta1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -28,8 +29,9 @@ import (
 type AgentBootstrapConfigSpec struct {
 	// Here we can add details to configure infraenv
 	// InfraEnvRef references the infra env to generate the ISO
-	InfraEnvRef   *corev1.ObjectReference      `json:"infraEnvRef,omitempty"`
-	PullSecretRef *corev1.LocalObjectReference `json:"pullSecretRef,omitempty"`
+	InfraEnvRef      *corev1.ObjectReference      `json:"infraEnvRef,omitempty"`
+	PullSecretRef    *corev1.LocalObjectReference `json:"pullSecretRef,omitempty"`
+	SSHAuthorizedKey string                       `json:"sshAuthorizedKey,omitempty"`
 }
 
 // AgentBootstrapConfigStatus defines the observed state of AgentBootstrapConfig
@@ -37,6 +39,30 @@ type AgentBootstrapConfigStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	ISODownloadURL string `json:"isoDownloadURL,omitempty"`
+
+	// Ready indicates the BootstrapData field is ready to be consumed
+	// +optional
+	Ready bool `json:"ready"`
+
+	// DataSecretName is the name of the secret that stores the bootstrap data script.
+	// +optional
+	DataSecretName *string `json:"dataSecretName,omitempty"`
+
+	// FailureReason will be set on non-retryable errors
+	// +optional
+	FailureReason string `json:"failureReason,omitempty"`
+
+	// FailureMessage will be set on non-retryable errors
+	// +optional
+	FailureMessage string `json:"failureMessage,omitempty"`
+
+	// ObservedGeneration is the latest generation observed by the controller.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions defines current service state of the KubeadmConfig.
+	// +optional
+	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -49,6 +75,16 @@ type AgentBootstrapConfig struct {
 
 	Spec   AgentBootstrapConfigSpec   `json:"spec,omitempty"`
 	Status AgentBootstrapConfigStatus `json:"status,omitempty"`
+}
+
+// GetConditions returns the set of conditions for this object.
+func (c *AgentBootstrapConfig) GetConditions() clusterv1.Conditions {
+	return c.Status.Conditions
+}
+
+// SetConditions sets the conditions on this object.
+func (c *AgentBootstrapConfig) SetConditions(conditions clusterv1.Conditions) {
+	c.Status.Conditions = conditions
 }
 
 //+kubebuilder:object:root=true
