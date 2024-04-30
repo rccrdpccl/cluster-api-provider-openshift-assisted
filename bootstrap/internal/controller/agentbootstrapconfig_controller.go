@@ -49,10 +49,6 @@ type AgentBootstrapConfigReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-const (
-	agentBootstrapConfigLabel = "bootstrap.cluster.x-k8s.io/agentBootstrapConfig"
-)
-
 func (r *AgentBootstrapConfigReconciler) getMachineTemplate(ctx context.Context, machineDeployment clusterv1.MachineDeployment) *metal3.Metal3MachineTemplate {
 	log := ctrl.LoggerFrom(ctx)
 	machineTemplateRef := machineDeployment.Spec.Template.Spec.InfrastructureRef
@@ -253,12 +249,6 @@ func getInfraEnvName(config *bootstrapv1beta1.AgentBootstrapConfig) (string, err
 	return fmt.Sprintf(nameFormat, clusterName, machineDeploymentName), nil
 }
 
-func (r *AgentBootstrapConfigReconciler) doesMachineDeploymentBelongToUs(machineDeployment clusterv1.MachineDeployment, config *bootstrapv1beta1.AgentBootstrapConfig) bool {
-	return machineDeployment.Spec.Template.Spec.Bootstrap.ConfigRef.Name == config.Name &&
-		machineDeployment.Spec.Template.Spec.Bootstrap.ConfigRef.GroupVersionKind() == bootstrapv1beta1.GroupVersion.WithKind("AgentBootstrapConfigSpec")
-
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *AgentBootstrapConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -291,7 +281,7 @@ func (r *AgentBootstrapConfigReconciler) createInfraEnv(ctx context.Context, con
 			Name:      infraEnvName,
 			Namespace: config.Namespace,
 			Labels: map[string]string{
-				agentBootstrapConfigLabel: config.Name,
+				bootstrapv1beta1.AgentBootstrapConfigLabel: config.Name,
 			},
 		},
 	}
