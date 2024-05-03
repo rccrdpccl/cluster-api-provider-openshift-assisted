@@ -147,9 +147,10 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	numMachines := int32(machines.Len()) //acp.Status.Replicas
 	desiredReplicas := acp.Spec.Replicas
 	machinesToCreate := desiredReplicas - numMachines
-	log.Info("Creating Machines", "number of machines", machinesToCreate)
+
 	log.Info("ACP", "all acp spec", acp.Spec)
 	if machinesToCreate > 0 {
+		log.Info("Creating Machines", "number of machines", machinesToCreate)
 		for i := 0; i < int(machinesToCreate); i++ {
 			log.Info("Scaling up control plane", "Desired", desiredReplicas, "Existing", numMachines)
 			bootstrapSpec := acp.Spec.AgentBootstrapConfigSpec.DeepCopy()
