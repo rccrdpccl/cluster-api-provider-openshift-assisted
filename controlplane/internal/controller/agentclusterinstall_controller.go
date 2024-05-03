@@ -21,7 +21,6 @@ import (
 	"fmt"
 
 	"github.com/openshift-assisted/cluster-api-agent/controlplane/api/v1beta1"
-	controlplanev1beta1 "github.com/openshift-assisted/cluster-api-agent/controlplane/api/v1beta1"
 	hiveext "github.com/openshift/assisted-service/api/hiveextension/v1beta1"
 	aimodels "github.com/openshift/assisted-service/models"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
@@ -46,6 +45,7 @@ func (r *AgentClusterInstallReconciler) SetupWithManager(mgr ctrl.Manager) error
 		For(&hiveext.AgentClusterInstall{}).
 		Complete(r)
 }
+
 func (r *AgentClusterInstallReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -74,6 +74,22 @@ func (r *AgentClusterInstallReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 
+	// Check if cluster has finished installing
+	if agentClusterInstall.Status.DebugInfo.State != aimodels.ClusterStatusAddingHosts ||
+		agentClusterInstall.Spec.ClusterMetadata.AdminKubeconfigSecretRef.Name == "" {
+		log.Info("Agent cluster install not finished installing", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace)
+		return ctrl.Result{}, nil
+	}
+
+	// Ensure kubeconfig secret exists
+	secretName := agentClusterInstall.Spec.ClusterMetadata.AdminKubeconfigSecretRef.Name
+	kubeconfigSecret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Name: secretName, Namespace: agentClusterInstall.Namespace}, kubeconfigSecret); err != nil {
+		log.Error(err, "failed getting kubeconfig secret for agentclusterinstall", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "secret name", secretName)
+		return ctrl.Result{}, err
+	}
+	log.Info("found kubeconfig secret", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "secret name", secretName)
+
 	// Get agent control plane based on clusterDeployment
 	agentCPList := &v1beta1.AgentControlPlaneList{}
 	if err := r.Client.List(ctx, agentCPList, client.InNamespace(agentClusterInstall.Namespace)); err != nil {
@@ -91,47 +107,32 @@ func (r *AgentClusterInstallReconciler) Reconcile(ctx context.Context, req ctrl.
 		if IsAgentControlPlaneReferencingClusterDeployment(agentCP, clusterDeployment) {
 			log.Info("Found AgentControlPlane associated with agent cluster install")
 
-			// Check if AgentClusterInstall has moved to day 2 aka control plane is installed
-			if agentClusterInstall.Status.DebugInfo.State == aimodels.ClusterStatusAddingHosts &&
-				agentClusterInstall.Spec.ClusterMetadata.AdminKubeconfigSecretRef.Name != "" {
-				secretName := agentClusterInstall.Spec.ClusterMetadata.AdminKubeconfigSecretRef.Name
-				log.Info("Agent cluster install for control plane nodes has finished. Attaching kubeconfig secret to agent control plane",
-					"agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "agent control plane name", agentCP.Name)
+			log.Info("Attaching kubeconfig secret to agent control plane",
+				"agent cluster install name", agentClusterInstall.Name,
+				"agent cluster install namespace", agentClusterInstall.Namespace, "agent control plane name", agentCP.Name)
 
-				// Get the kubeconfig secret and label with capi key pair cluster.x-k8s.io/cluster-name=<cluster name>
-				kubeconfigSecret := &corev1.Secret{}
-				if err := r.Client.Get(ctx, client.ObjectKey{Name: secretName, Namespace: agentCP.Namespace}, kubeconfigSecret); err != nil {
-					log.Error(err, "failed getting kubeconfig secret for agentclusterinstall", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "secret name", secretName)
-					return ctrl.Result{}, err
-				}
-				log.Info("found kubeconfig secret", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "secret name", secretName)
+			// Label original kubeconfig secret with clusternamelabel
+			clusterName := agentCP.Labels[clusterv1.ClusterNameLabel]
+			EnsureClusterLabelOnSecret(kubeconfigSecret, clusterName)
+			if err := r.Client.Update(ctx, kubeconfigSecret); err != nil {
+				log.Error(err, "failed updating kubeconfig secret for agentclusterinstall", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "secret name", secretName)
+				return ctrl.Result{}, err
+			}
 
-				clusterName := agentCP.Labels[clusterv1.ClusterNameLabel]
-				if kubeconfigSecret.Labels == nil {
-					kubeconfigSecret.Labels = map[string]string{}
-				}
-
-				kubeconfigSecret.Labels[clusterv1.ClusterNameLabel] = clusterName
-				if err := r.Client.Update(ctx, kubeconfigSecret); err != nil {
-					log.Error(err, "failed updating kubeconfig secret for agentclusterinstall", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "secret name", secretName)
+			if !r.ClusterKubeconfigSecretExists(ctx, clusterName, agentCP.Namespace) {
+				// Create secret <cluster-name>-kubeconfig from original kubeconfig secret - this is what the CAPI Cluster looks for to set the control plane as initialized
+				clusterNameKubeconfigSecret := GenerateSecretWithOwner(client.ObjectKey{Name: clusterName, Namespace: agentCP.Namespace}, kubeconfigSecret.Data["value"], *metav1.NewControllerRef(&agentCP, v1beta1.GroupVersion.WithKind(agentControlPlaneKind)))
+				log.Info("Cluster kubeconfig doesn't exist, creating it", "secret name", clusterNameKubeconfigSecret.Name)
+				if err := r.Client.Create(ctx, clusterNameKubeconfigSecret); err != nil {
+					log.Error(err, "failed creating secret for agent control plane", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "agent control plane name", agentCP.Name)
 					return ctrl.Result{}, err
 				}
 
-				if !r.ClusterKubeconfigSecretExists(ctx, clusterName, agentCP.Namespace) {
-					// Create secret <cluster-name>-kubeconfig from original kubeconfig secret - this is what the CAPI Cluster looks for to set the control plane as initialized
-					clusterNameKubeconfigSecret := GenerateSecretWithOwner(client.ObjectKey{Name: clusterName, Namespace: agentCP.Namespace}, kubeconfigSecret.Data["value"], *metav1.NewControllerRef(&agentCP, controlplanev1beta1.GroupVersion.WithKind(agentControlPlaneKind)))
-					log.Info("Cluster kubeconfig doesn't exist, creating it", "secret name", clusterNameKubeconfigSecret.Name)
-					if err := r.Client.Create(ctx, clusterNameKubeconfigSecret); err != nil {
-						log.Error(err, "failed creating secret for agent control plane", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "agent control plane name", agentCP.Name)
-						return ctrl.Result{}, err
-					}
-					// Update AgentControlPlane status
-					agentCP.Status.Ready = true
-					agentCP.Status.Initialized = true
-					if err := r.Client.Status().Update(ctx, &agentCP); err != nil {
-						log.Error(err, "failed updating agent control plane to ready for agentclusterinstall", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "agent control plane name", agentCP.Name)
-						return ctrl.Result{}, err
-					}
+				agentCP.Status.Ready = true
+				agentCP.Status.Initialized = true
+				if err := r.Client.Status().Update(ctx, &agentCP); err != nil {
+					log.Error(err, "failed updating agent control plane to ready for agentclusterinstall", "agent cluster install name", agentClusterInstall.Name, "agent cluster install namespace", agentClusterInstall.Namespace, "agent control plane name", agentCP.Name)
+					return ctrl.Result{}, err
 				}
 			}
 		}
@@ -167,4 +168,11 @@ func GenerateSecretWithOwner(clusterName client.ObjectKey, data []byte, owner me
 		},
 		Type: clusterv1.ClusterSecretType,
 	}
+}
+
+func EnsureClusterLabelOnSecret(secret *corev1.Secret, clusterName string) {
+	if secret.Labels == nil {
+		secret.Labels = map[string]string{}
+	}
+	secret.Labels[clusterv1.ClusterNameLabel] = clusterName
 }
