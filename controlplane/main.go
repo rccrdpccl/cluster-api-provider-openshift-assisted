@@ -19,10 +19,11 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"os"
+
 	bootstrapv1beta1 "github.com/openshift-assisted/cluster-api-agent/bootstrap/api/v1beta1"
 	hiveext "github.com/openshift/assisted-service/api/hiveextension/v1beta1"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
-	"os"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -141,6 +142,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterDeployment")
+		os.Exit(1)
+	}
+	if err = (&controlplanecontroller.AgentClusterInstallReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AgentClusterInstall")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder

@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 )
 
-// ClusterDeploymentReconciler reconciles a InfraEnv object
+// ClusterDeploymentReconciler reconciles a ClusterDeployment object
 type ClusterDeploymentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -69,7 +69,7 @@ func (r *ClusterDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 	for _, agentCP := range agentCPList.Items {
-		if r.isAgentControlPlaneReferencingClusterDeployment(agentCP, clusterDeployment) {
+		if IsAgentControlPlaneReferencingClusterDeployment(agentCP, clusterDeployment) {
 			log.Info("ClusterDeployment is referenced by AgentControlPlane")
 			return r.ensureAgentClusterInstall(ctx, clusterDeployment, agentCP)
 		}
@@ -79,7 +79,7 @@ func (r *ClusterDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-func (r *ClusterDeploymentReconciler) isAgentControlPlaneReferencingClusterDeployment(agentCP v1beta1.AgentControlPlane, clusterDeployment *hivev1.ClusterDeployment) bool {
+func IsAgentControlPlaneReferencingClusterDeployment(agentCP v1beta1.AgentControlPlane, clusterDeployment *hivev1.ClusterDeployment) bool {
 	return agentCP.Spec.AgentConfigSpec.ClusterDeploymentRef != nil &&
 		agentCP.Spec.AgentConfigSpec.ClusterDeploymentRef.GroupVersionKind().String() == hivev1.SchemeGroupVersion.WithKind("ClusterDeployment").String() &&
 		agentCP.Spec.AgentConfigSpec.ClusterDeploymentRef.Namespace == clusterDeployment.Namespace &&
