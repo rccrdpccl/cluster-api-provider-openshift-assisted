@@ -202,14 +202,17 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 
 	// TODO: check if it's a control plane or worker
 	log.Info("Found metal3 machine owned by machine, adding infraenv ISO URL", "name", metal3Machine.Name, "namespace", metal3Machine.Namespace)
-	// TODO: check if URL changes and only update if changed
-	metal3Machine.Spec.Image.URL = config.Status.ISODownloadURL
-	if err := r.Client.Update(ctx, metal3Machine); err != nil {
-		log.Error(err, "couldn't update metal3 machine", "name", metal3Machine.Name, "namespace", metal3Machine.Namespace)
-		return ctrl.Result{}, err
+	if metal3Machine.Spec.Image.URL == "" || metal3Machine.Spec.Image.URL != config.Status.ISODownloadURL {
+		// Change metal3 image url if it's empty or it doesn't match the agent bootstrap config iso download url
+		log.Info("adding ISO URL to metal3 machine because it's either empty or doesn't match the iso download URL", "original URL", metal3Machine.Spec.Image.URL, "new URL", config.Status.ISODownloadURL)
+		metal3Machine.Spec.Image.URL = config.Status.ISODownloadURL
+		if err := r.Client.Update(ctx, metal3Machine); err != nil {
+			log.Error(err, "couldn't update metal3 machine", "name", metal3Machine.Name, "namespace", metal3Machine.Namespace)
+			return ctrl.Result{}, err
+		}
+		log.Info("Added ISO URLs to metal3 machines", "machine", metal3Machine.Name, "namespace", metal3Machine.Namespace)
 	}
 
-	log.Info("Added ISO URLs to metal3 machines", "machine", metal3Machine.Name, "namespace", metal3Machine.Namespace)
 	// create secret
 	secret := &corev1.Secret{}
 	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: config.Namespace, Name: config.Name}, secret); err != nil {
