@@ -83,6 +83,7 @@ type AgentControlPlaneReconciler struct {
 func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, rerr error) {
 	log := ctrl.LoggerFrom(ctx)
 
+	// handle deletion
 	acp := &controlplanev1beta1.AgentControlPlane{}
 	if err := r.Client.Get(ctx, req.NamespacedName, acp); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -110,6 +111,10 @@ func (r *AgentControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
+	if !cluster.Status.InfrastructureReady || !cluster.Spec.ControlPlaneEndpoint.IsValid() {
+		log.Info("cluster is not ready, retrying...")
+		return ctrl.Result{Requeue: true, RequeueAfter: time.Second * 20}, nil
+	}
 	// TODO: handle changes in pull-secret (for example)
 	// create clusterdeployment if not set
 	if acp.Spec.AgentConfigSpec.ClusterDeploymentRef == nil {

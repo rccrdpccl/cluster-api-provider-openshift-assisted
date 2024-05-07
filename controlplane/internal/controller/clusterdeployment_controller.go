@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-
 	"github.com/openshift-assisted/cluster-api-agent/controlplane/api/v1beta1"
 	hiveext "github.com/openshift/assisted-service/api/hiveextension/v1beta1"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
@@ -26,9 +25,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/cluster-api/util"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"time"
 )
 
 // ClusterDeploymentReconciler reconciles a ClusterDeployment object
@@ -68,13 +69,13 @@ func (r *ClusterDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if len(agentCPList.Items) == 0 {
 		return ctrl.Result{}, nil
 	}
-	for _, agentCP := range agentCPList.Items {
-		if IsAgentControlPlaneReferencingClusterDeployment(agentCP, clusterDeployment) {
+
+	for _, acp := range agentCPList.Items {
+		if IsAgentControlPlaneReferencingClusterDeployment(acp, clusterDeployment) {
 			log.Info("ClusterDeployment is referenced by AgentControlPlane")
-			return r.ensureAgentClusterInstall(ctx, clusterDeployment, agentCP)
+			return r.ensureAgentClusterInstall(ctx, clusterDeployment, acp)
 		}
 	}
-	log.Info("No agentcontrolplane is referenced by ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
 
 	return ctrl.Result{}, nil
 }
@@ -88,7 +89,17 @@ func IsAgentControlPlaneReferencingClusterDeployment(agentCP v1beta1.AgentContro
 
 func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Context, clusterDeployment *hivev1.ClusterDeployment, acp v1beta1.AgentControlPlane) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
+	log.Info("No agentcontrolplane is referenced by ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
 
+	cluster, err := util.GetOwnerCluster(ctx, r.Client, acp.ObjectMeta)
+	if err != nil {
+		log.Error(err, "failed to retrieve owner Cluster from the API Server", "agentcontrolplane name", acp.Name, "agentcontrolplane namespace", acp.Namespace)
+		return ctrl.Result{}, err
+	}
+	if cluster == nil {
+		log.Info("Cluster Controller has not yet set OwnerRef")
+		return ctrl.Result{Requeue: true, RequeueAfter: 10 * time.Second}, nil
+	}
 	if clusterDeployment.Spec.ClusterInstallRef != nil {
 		log.Info(
 			"Skipping reconciliation: cluster deployment already has a referenced agent cluster install",
@@ -114,19 +125,42 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 		}
 	}
 
+	clusterNetwork := []hiveext.ClusterNetworkEntry{}
+
+	if cluster.Spec.ClusterNetwork != nil && cluster.Spec.ClusterNetwork.Pods != nil {
+		for _, cidrBlock := range cluster.Spec.ClusterNetwork.Pods.CIDRBlocks {
+			clusterNetwork = append(clusterNetwork, hiveext.ClusterNetworkEntry{CIDR: cidrBlock, HostPrefix: 23})
+		}
+	}
+	serviceNetwork := []string{}
+	if cluster.Spec.ClusterNetwork != nil && cluster.Spec.ClusterNetwork.Services != nil {
+		serviceNetwork = cluster.Spec.ClusterNetwork.Services.CIDRBlocks
+	}
+
 	log.Info("Creating agent cluster install for ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
 	agentClusterInstall := &hiveext.AgentClusterInstall{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      clusterDeployment.Name,
 			Namespace: clusterDeployment.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(&acp, v1beta1.GroupVersion.WithKind(agentControlPlaneKind)),
+			},
 		},
 		Spec: hiveext.AgentClusterInstallSpec{
+			// TODO: fix this stuff below
+			APIVIP:               acp.Spec.AgentConfigSpec.APIVIPs[0],
+			IngressVIP:           acp.Spec.AgentConfigSpec.IngressVIPs[0],
 			ClusterDeploymentRef: corev1.LocalObjectReference{Name: clusterDeployment.Name},
 			ProvisionRequirements: hiveext.ProvisionRequirements{
 				ControlPlaneAgents: int(acp.Spec.Replicas),
 			},
 			SSHPublicKey: acp.Spec.AgentConfigSpec.SSHAuthorizedKey,
 			ImageSetRef:  &hivev1.ClusterImageSetReference{Name: imageSet.Name},
+			Networking: hiveext.Networking{
+				ClusterNetwork: clusterNetwork,
+				ServiceNetwork: serviceNetwork,
+				MachineNetwork: acp.Spec.AgentConfigSpec.MachineNetwork,
+			},
 		},
 	}
 	if err := r.Client.Create(ctx, agentClusterInstall); err != nil {
@@ -138,6 +172,6 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 		Kind:    "AgentClusterInstall",
 		Name:    agentClusterInstall.Name,
 	}
-	err := r.Client.Update(ctx, clusterDeployment)
+	err = r.Client.Update(ctx, clusterDeployment)
 	return ctrl.Result{}, err
 }

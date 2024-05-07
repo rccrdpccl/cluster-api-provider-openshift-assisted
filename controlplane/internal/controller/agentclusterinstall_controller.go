@@ -39,6 +39,7 @@ import (
 )
 
 // AgentClusterInstallReconciler reconciles a AgentClusterInstall object
+
 type AgentClusterInstallReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme

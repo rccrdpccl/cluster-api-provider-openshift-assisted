@@ -72,6 +72,8 @@ func (r *AgentBootstrapConfigReconciler) getMachineTemplate(ctx context.Context,
 	return nil
 }
 
+// +kubebuilder:rbac:groups=agent-install.openshift.io,resources=agents,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agent-install.openshift.io,resources=agents/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=hive.openshift.io,resources=clusterdeployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch;create;update;patch;delete
@@ -140,6 +142,7 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 	if len(clusterDeployments.Items) != 1 {
 		log.Info("found more or less than 1 cluster deployments. exactly one is needed", "cluster_name", clusterName)
+		return ctrl.Result{}, nil // bug
 	}
 
 	clusterDeployment := clusterDeployments.Items[0]
