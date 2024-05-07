@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -109,6 +110,28 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 		)
 		return ctrl.Result{}, nil
 	}
+	imageSet, err := r.createOrUpdateClusterImageSet(ctx, clusterDeployment, acp)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	agentClusterInstall, err := r.createOrUpdateAgentClusterInstall(ctx, clusterDeployment, acp, cluster, imageSet)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	clusterDeployment.Spec.ClusterInstallRef = &hivev1.ClusterInstallLocalReference{
+		Group:   hiveext.Group,
+		Version: hiveext.Version,
+		Kind:    "AgentClusterInstall",
+		Name:    agentClusterInstall.Name,
+	}
+	err = r.Client.Update(ctx, clusterDeployment)
+	return ctrl.Result{}, err
+}
+
+func (r *ClusterDeploymentReconciler) createOrUpdateClusterImageSet(ctx context.Context, clusterDeployment *hivev1.ClusterDeployment, acp v1beta1.AgentControlPlane) (*hivev1.ClusterImageSet, error) {
+	log := ctrl.LoggerFrom(ctx)
 	imageSet := &hivev1.ClusterImageSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      clusterDeployment.Name,
@@ -120,19 +143,29 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 	}
 	if err := r.Client.Create(ctx, imageSet); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			log.Info("ImageSet already exists", "name", imageSet.Name, "namespace", imageSet.Namespace)
-			return ctrl.Result{}, err
+			log.Info("failed to create ImageSet", "name", imageSet.Name, "namespace", imageSet.Namespace)
+			return nil, err
+		}
+		log.Info("ImageSet already exists, updating", "name", imageSet.Name, "namespace", imageSet.Namespace)
+
+		if err := r.Client.Update(ctx, imageSet); err != nil {
+			log.Info("ImageSet failed to update", "name", imageSet.Name, "namespace", imageSet.Namespace)
+			return nil, err
 		}
 	}
+	return imageSet, nil
+}
 
-	clusterNetwork := []hiveext.ClusterNetworkEntry{}
+func (r *ClusterDeploymentReconciler) createOrUpdateAgentClusterInstall(ctx context.Context, clusterDeployment *hivev1.ClusterDeployment, acp v1beta1.AgentControlPlane, cluster *clusterv1.Cluster, imageSet *hivev1.ClusterImageSet) (*hiveext.AgentClusterInstall, error) {
+	log := ctrl.LoggerFrom(ctx)
+	var clusterNetwork []hiveext.ClusterNetworkEntry
 
 	if cluster.Spec.ClusterNetwork != nil && cluster.Spec.ClusterNetwork.Pods != nil {
 		for _, cidrBlock := range cluster.Spec.ClusterNetwork.Pods.CIDRBlocks {
 			clusterNetwork = append(clusterNetwork, hiveext.ClusterNetworkEntry{CIDR: cidrBlock, HostPrefix: 23})
 		}
 	}
-	serviceNetwork := []string{}
+	var serviceNetwork []string
 	if cluster.Spec.ClusterNetwork != nil && cluster.Spec.ClusterNetwork.Services != nil {
 		serviceNetwork = cluster.Spec.ClusterNetwork.Services.CIDRBlocks
 	}
@@ -164,14 +197,14 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 		},
 	}
 	if err := r.Client.Create(ctx, agentClusterInstall); err != nil {
-		return ctrl.Result{}, err
+		if !apierrors.IsNotFound(err) {
+			log.Info("error creating agent cluster install for ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
+			return nil, err
+		}
+		if err := r.Client.Update(ctx, agentClusterInstall); err != nil {
+			log.Info("error updating agent cluster install for ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
+			return nil, err
+		}
 	}
-	clusterDeployment.Spec.ClusterInstallRef = &hivev1.ClusterInstallLocalReference{
-		Group:   hiveext.Group,
-		Version: hiveext.Version,
-		Kind:    "AgentClusterInstall",
-		Name:    agentClusterInstall.Name,
-	}
-	err = r.Client.Update(ctx, clusterDeployment)
-	return ctrl.Result{}, err
+	return agentClusterInstall, nil
 }
