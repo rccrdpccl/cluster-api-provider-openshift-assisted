@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -119,6 +120,7 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      clusterDeployment.Name,
 			Namespace: clusterDeployment.Namespace,
+			Labels:    controlPlaneMachineLabelsForCluster(&acp, clusterDeployment.Labels[clusterv1.ClusterNameLabel]),
 		},
 		Spec: hiveext.AgentClusterInstallSpec{
 			ClusterDeploymentRef: corev1.LocalObjectReference{Name: clusterDeployment.Name},
