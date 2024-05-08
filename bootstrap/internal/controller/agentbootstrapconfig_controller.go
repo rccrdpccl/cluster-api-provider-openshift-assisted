@@ -29,7 +29,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	//"sigs.k8s.io/controller-runtime/pkg/log"
 	metal3 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta1"
 	bootstrapv1beta1 "github.com/openshift-assisted/cluster-api-agent/bootstrap/api/v1beta1"
 	aiv1beta1 "github.com/openshift/assisted-service/api/v1beta1"
@@ -72,6 +71,9 @@ func (r *AgentBootstrapConfigReconciler) getMachineTemplate(ctx context.Context,
 	return nil
 }
 
+// +kubebuilder:rbac:groups=extensions.hive.openshift.io,resources=agentclusterinstalls,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=extensions.hive.openshift.io,resources=agentclusterinstalls/status,verbs=get
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=metal3machines,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hive.openshift.io,resources=clusterdeployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch;create;update;patch;delete
@@ -84,6 +86,7 @@ func (r *AgentBootstrapConfigReconciler) getMachineTemplate(ctx context.Context,
 // +kubebuilder:rbac:groups=agent-install.openshift.io,resources=infraenvs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=agent-install.openshift.io,resources=agents,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agent-install.openshift.io,resources=agents/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=metal3.io,resources=baremetalhosts,verbs=get;list;watch;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -97,6 +100,12 @@ func (r *AgentBootstrapConfigReconciler) getMachineTemplate(ctx context.Context,
 func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, rerr error) {
 
 	log := ctrl.LoggerFrom(ctx)
+
+	log.Info("Reconciling AgentBootstrapConfig")
+	defer (func() {
+		log.Info("Finished reconciling AgentBootstrapConfig")
+
+	})()
 
 	config := &bootstrapv1beta1.AgentBootstrapConfig{}
 	log.Info("Getting AgentBootstrapConfig", "namespacedname", req.NamespacedName)
@@ -186,6 +195,7 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	// Get the Machine associated with this agentbootstrapconfig
+
 	// TODO: change the way we get this, for now it has the same name but that may not be the case - we should change to fetch by spec's reference to this agentbootstrapconfig
 	machine, err := util.GetMachineByName(ctx, r.Client, config.Namespace, config.Name)
 	if err != nil {
@@ -201,7 +211,7 @@ func (r *AgentBootstrapConfigReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	// TODO: check if it's a control plane or worker
-	log.Info("Found metal3 machine owned by machine, adding infraenv ISO URL", "name", metal3Machine.Name, "namespace", metal3Machine.Namespace)
+	log.Info("Found metal3 machine owned by machine", "name", metal3Machine.Name, "namespace", metal3Machine.Namespace)
 	if metal3Machine.Spec.Image.URL == "" || metal3Machine.Spec.Image.URL != config.Status.ISODownloadURL {
 		// Change metal3 image url if it's empty or it doesn't match the agent bootstrap config iso download url
 		log.Info("adding ISO URL to metal3 machine because it's either empty or doesn't match the iso download URL", "original URL", metal3Machine.Spec.Image.URL, "new URL", config.Status.ISODownloadURL)
