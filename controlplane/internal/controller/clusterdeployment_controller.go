@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -101,63 +102,124 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(ctx context.Cont
 		log.Info("Cluster Controller has not yet set OwnerRef")
 		return ctrl.Result{Requeue: true, RequeueAfter: 10 * time.Second}, nil
 	}
+
+	imageSet, err := r.createOrUpdateClusterImageSet(ctx, clusterDeployment.Name, acp.Spec.AgentConfigSpec.ReleaseImage)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if imageSet == nil {
+		return ctrl.Result{Requeue: true, RequeueAfter: 10 * time.Second}, nil
+	}
+
 	if clusterDeployment.Spec.ClusterInstallRef != nil {
 		log.Info(
-			"Skipping reconciliation: cluster deployment already has a referenced agent cluster install",
+			"skipping reconciliation: cluster deployment already has a referenced agent cluster install",
 			"cluster_deployment_name", clusterDeployment.Name,
 			"cluster_deployment_namespace", clusterDeployment.Namespace,
 			"agent_cluster_install", clusterDeployment.Spec.ClusterInstallRef.Name,
 		)
 		return ctrl.Result{}, nil
 	}
-	imageSet, err := r.createOrUpdateClusterImageSet(ctx, clusterDeployment, acp)
+	aci, err := r.createOrUpdateAgentClusterInstall(ctx, clusterDeployment, acp, cluster, imageSet)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-
-	agentClusterInstall, err := r.createOrUpdateAgentClusterInstall(ctx, clusterDeployment, acp, cluster, imageSet)
-	if err != nil {
-		return ctrl.Result{}, err
+	if aci == nil {
+		return ctrl.Result{Requeue: true, RequeueAfter: 10 * time.Second}, nil
 	}
 
-	clusterDeployment.Spec.ClusterInstallRef = &hivev1.ClusterInstallLocalReference{
-		Group:   hiveext.Group,
-		Version: hiveext.Version,
-		Kind:    "AgentClusterInstall",
-		Name:    agentClusterInstall.Name,
-	}
-	err = r.Client.Update(ctx, clusterDeployment)
+	err = r.updateClusterDeploymentRef(ctx, clusterDeployment, aci)
+
 	return ctrl.Result{}, err
 }
 
-func (r *ClusterDeploymentReconciler) createOrUpdateClusterImageSet(ctx context.Context, clusterDeployment *hivev1.ClusterDeployment, acp v1beta1.AgentControlPlane) (*hivev1.ClusterImageSet, error) {
-	log := ctrl.LoggerFrom(ctx)
-	imageSet := &hivev1.ClusterImageSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      clusterDeployment.Name,
-			Namespace: clusterDeployment.Namespace,
-		},
-		Spec: hivev1.ClusterImageSetSpec{
-			ReleaseImage: acp.Spec.AgentConfigSpec.ReleaseImage,
-		},
+func (r *ClusterDeploymentReconciler) updateClusterDeploymentRef(ctx context.Context, cd *hivev1.ClusterDeployment, aci *hiveext.AgentClusterInstall) error {
+	cd.Spec.ClusterInstallRef = &hivev1.ClusterInstallLocalReference{
+		Group:   hiveext.Group,
+		Version: hiveext.Version,
+		Kind:    "AgentClusterInstall",
+		Name:    aci.Name,
 	}
-	if err := r.Client.Create(ctx, imageSet); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			log.Info("failed to create ImageSet", "name", imageSet.Name, "namespace", imageSet.Namespace)
-			return nil, err
-		}
-		log.Info("ImageSet already exists, updating", "name", imageSet.Name, "namespace", imageSet.Namespace)
+	return r.Client.Update(ctx, cd)
 
-		if err := r.Client.Update(ctx, imageSet); err != nil {
-			log.Info("ImageSet failed to update", "name", imageSet.Name, "namespace", imageSet.Namespace)
+}
+
+func (r *ClusterDeploymentReconciler) createOrUpdateClusterImageSet(ctx context.Context, imageSetName, releaseImage string) (*hivev1.ClusterImageSet, error) {
+	log := ctrl.LoggerFrom(ctx)
+
+	imageSet := &hivev1.ClusterImageSet{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Name: imageSetName,
+	}, imageSet); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Info("failed to retrieve ImageSet", "name", imageSetName)
 			return nil, err
 		}
+		log.Info("ImageSet not found", "name", imageSetName)
+
+		imageSet = computeClusterImageSet(imageSetName, releaseImage)
+		if err := r.Client.Create(ctx, imageSet); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				log.Info("failed to create ImageSet", "name", imageSet.Name, "namespace", imageSet.Namespace)
+				return nil, err
+			}
+			log.Info("ImageSet already exists", "name", imageSet.Name, "namespace", imageSet.Namespace)
+			return nil, nil
+		}
+		return imageSet, nil
+	}
+	log.Info("ImageSet already exists, updating", "name", imageSet.Name, "namespace", imageSet.Namespace)
+
+	if err := r.Client.Update(ctx, imageSet); err != nil {
+		log.Info("ImageSet failed to update", "name", imageSet.Name, "namespace", imageSet.Namespace)
+		return nil, err
 	}
 	return imageSet, nil
 }
 
+func computeClusterImageSet(imageSetName string, releaseImage string) *hivev1.ClusterImageSet {
+	return &hivev1.ClusterImageSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: imageSetName,
+		},
+		Spec: hivev1.ClusterImageSetSpec{
+			ReleaseImage: releaseImage,
+		},
+	}
+}
+
 func (r *ClusterDeploymentReconciler) createOrUpdateAgentClusterInstall(ctx context.Context, clusterDeployment *hivev1.ClusterDeployment, acp v1beta1.AgentControlPlane, cluster *clusterv1.Cluster, imageSet *hivev1.ClusterImageSet) (*hiveext.AgentClusterInstall, error) {
 	log := ctrl.LoggerFrom(ctx)
+
+	aci := &hiveext.AgentClusterInstall{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Name:      clusterDeployment.Name,
+		Namespace: clusterDeployment.Namespace,
+	}, aci); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Info("error retrieving agentclusterinstall", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
+			return nil, err
+		}
+		log.Info("creating agent cluster install for ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
+		aci = computeAgentClusterInstall(clusterDeployment, acp, imageSet, cluster)
+		if err := r.Client.Create(ctx, aci); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				log.Info("failed to create agent cluster install for ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
+				return nil, err
+			}
+			// Although we did not retrieve, it already exists, reconcile again
+			return nil, nil
+		}
+		return aci, nil
+	}
+	if err := r.Client.Update(ctx, aci); err != nil {
+		log.Info("error updating agent cluster install for ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
+		return nil, err
+	}
+	return aci, nil
+}
+
+func computeAgentClusterInstall(clusterDeployment *hivev1.ClusterDeployment, acp v1beta1.AgentControlPlane, imageSet *hivev1.ClusterImageSet, cluster *clusterv1.Cluster) *hiveext.AgentClusterInstall {
 	var clusterNetwork []hiveext.ClusterNetworkEntry
 
 	if cluster.Spec.ClusterNetwork != nil && cluster.Spec.ClusterNetwork.Pods != nil {
@@ -169,9 +231,7 @@ func (r *ClusterDeploymentReconciler) createOrUpdateAgentClusterInstall(ctx cont
 	if cluster.Spec.ClusterNetwork != nil && cluster.Spec.ClusterNetwork.Services != nil {
 		serviceNetwork = cluster.Spec.ClusterNetwork.Services.CIDRBlocks
 	}
-
-	log.Info("Creating agent cluster install for ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
-	agentClusterInstall := &hiveext.AgentClusterInstall{
+	return &hiveext.AgentClusterInstall{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      clusterDeployment.Name,
 			Namespace: clusterDeployment.Namespace,
@@ -196,15 +256,4 @@ func (r *ClusterDeploymentReconciler) createOrUpdateAgentClusterInstall(ctx cont
 			},
 		},
 	}
-	if err := r.Client.Create(ctx, agentClusterInstall); err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Info("error creating agent cluster install for ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
-			return nil, err
-		}
-		if err := r.Client.Update(ctx, agentClusterInstall); err != nil {
-			log.Info("error updating agent cluster install for ClusterDeployment", "name", clusterDeployment.Name, "namespace", clusterDeployment.Namespace)
-			return nil, err
-		}
-	}
-	return agentClusterInstall, nil
 }

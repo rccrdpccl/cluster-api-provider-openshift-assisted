@@ -189,6 +189,7 @@ func (r *AgentControlPlaneReconciler) computeDesiredMachine(acp *controlplanev1b
 		}
 		annotations[controlplanev1beta1.AgentClusterConfigurationAnnotation] = string(clusterConfig)
 	*/
+	// TODO: add label for role
 	// Construct the basic Machine.
 	desiredMachine := &clusterv1.Machine{
 		TypeMeta: metav1.TypeMeta{
