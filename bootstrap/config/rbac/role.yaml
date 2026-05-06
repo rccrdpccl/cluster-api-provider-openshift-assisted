@@ -69,6 +69,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - config.openshift.io
+  resources:
+  - apiservers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - extensions.hive.openshift.io
   resources:
   - agentclusterinstalls
@@ -81,21 +89,6 @@ rules:
   - hive.openshift.io
   resources:
   - clusterdeployments
-  verbs:
-  - list
-  - watch
-- apiGroups:
-  - infrastructure.cluster.x-k8s.io
-  resources:
-  - metal3machines
-  - metal3machinetemplates
-  verbs:
-  - get
-  - update
-- apiGroups:
-  - metal3.io
-  resources:
-  - baremetalhosts
   verbs:
   - list
   - watch

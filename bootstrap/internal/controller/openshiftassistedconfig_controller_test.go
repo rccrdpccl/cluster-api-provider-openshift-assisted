@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/types"
 
@@ -36,12 +37,14 @@ import (
 	v1 "github.com/openshift/hive/apis/hive/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/cluster-api/util/conditions"
+	v1beta1conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	bootstrapv1alpha1 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/bootstrap/api/v1alpha1"
+	bootstrapv1alpha2 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/bootstrap/api/v1alpha2"
+	controlplanev1alpha3 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/api/v1alpha3"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 const (
@@ -94,6 +97,16 @@ func (t *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.mockHandler(req)
 }
 
+// mockHTTPClientFactory allows us to mock HTTP client creation for tests
+type mockHTTPClientFactory struct {
+	client *http.Client
+	err    error
+}
+
+func (m *mockHTTPClientFactory) CreateHTTPClient(config assistedinstaller.ServiceConfig, k8sClient client.Client) (*http.Client, error) {
+	return m.client, m.err
+}
+
 var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 	Context("When reconciling a resource", func() {
 		ctx := context.Background()
@@ -103,7 +116,7 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 		BeforeEach(func() {
 			By("Resetting fakeclient state")
 			k8sClient = fakeclient.NewClientBuilder().WithScheme(testScheme).
-				WithStatusSubresource(&bootstrapv1alpha1.OpenshiftAssistedConfig{}, &v1beta1.InfraEnv{}).
+				WithStatusSubresource(&bootstrapv1alpha2.OpenshiftAssistedConfig{}, &v1beta1.InfraEnv{}).
 				Build()
 			Expect(k8sClient).NotTo(BeNil())
 
@@ -136,8 +149,8 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 
 				// This config has no owner, should exit before setting conditions
 				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oac), oac)).To(Succeed())
-				condition := conditions.Get(oac,
-					bootstrapv1alpha1.DataSecretAvailableCondition,
+				condition := v1beta1conditions.Get(oac,
+					bootstrapv1alpha2.DataSecretAvailableCondition,
 				)
 				Expect(condition).To(BeNil())
 			})
@@ -162,8 +175,8 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 
 				// This config has no relevant owner, should exit before setting conditions
 				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oac), oac)).To(Succeed())
-				condition := conditions.Get(oac,
-					bootstrapv1alpha1.DataSecretAvailableCondition,
+				condition := v1beta1conditions.Get(oac,
+					bootstrapv1alpha2.DataSecretAvailableCondition,
 				)
 				Expect(condition).To(BeNil())
 			})
@@ -179,17 +192,17 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oac), oac)).To(Succeed())
-				dataSecretReadyCondition := conditions.Get(oac,
-					bootstrapv1alpha1.DataSecretAvailableCondition,
+				dataSecretReadyCondition := v1beta1conditions.Get(oac,
+					bootstrapv1alpha2.DataSecretAvailableCondition,
 				)
 				Expect(dataSecretReadyCondition).NotTo(BeNil())
-				Expect(dataSecretReadyCondition.Reason).To(Equal(bootstrapv1alpha1.WaitingForAssistedInstallerReason))
+				Expect(dataSecretReadyCondition.Reason).To(Equal(bootstrapv1alpha2.WaitingForAssistedInstallerReason))
 			})
 		})
 		When("ClusterDeployment is created but AgentClusterInstall is not", func() {
 			It("should requeue the request without errors", func() {
 				oac := setupControlPlaneOpenshiftAssistedConfigWithPullSecretRef(ctx, k8sClient)
-				cd := testutils.NewClusterDeploymentWithOwnerCluster(namespace, clusterName, clusterName)
+				cd := testutils.NewClusterDeploymentWithOwnerCluster(namespace, clusterName, clusterName, nil)
 				Expect(k8sClient.Create(ctx, cd)).To(Succeed())
 				// but not ACI
 
@@ -197,32 +210,13 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 					NamespacedName: client.ObjectKeyFromObject(oac),
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Requeue).To(BeTrue())
+				Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oac), oac)).To(Succeed())
-				dataSecretReadyCondition := conditions.Get(oac,
-					bootstrapv1alpha1.DataSecretAvailableCondition,
+				dataSecretReadyCondition := v1beta1conditions.Get(oac,
+					bootstrapv1alpha2.DataSecretAvailableCondition,
 				)
 				Expect(dataSecretReadyCondition).NotTo(BeNil())
-				Expect(dataSecretReadyCondition.Reason).To(Equal(bootstrapv1alpha1.WaitingForAssistedInstallerReason))
-			})
-		})
-		When("ClusterDeployment and AgentClusterInstall are already created", func() {
-			It("should create infraenv with a CreatedAt time not past cooldown", func() {
-				oac := setupControlPlaneOpenshiftAssistedConfigWithPullSecretRef(ctx, k8sClient)
-				mockControlPlaneInitialization(ctx, k8sClient)
-
-				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: client.ObjectKeyFromObject(oac),
-				})
-				Expect(err).To(MatchError("infraenv not ready yet. CreatedTime: <nil>"))
-				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oac), oac)).To(Succeed())
-				dataSecretReadyCondition := conditions.Get(oac,
-					bootstrapv1alpha1.DataSecretAvailableCondition,
-				)
-				Expect(dataSecretReadyCondition).NotTo(BeNil())
-				Expect(dataSecretReadyCondition.Reason).To(Equal(bootstrapv1alpha1.InfraEnvCooldownReason))
-
-				assertThereAreMatchingInfraEnvs(ctx, k8sClient, oac)
+				Expect(dataSecretReadyCondition.Reason).To(Equal(bootstrapv1alpha2.WaitingForAssistedInstallerReason))
 			})
 		})
 		When(
@@ -239,7 +233,7 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 					_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 						NamespacedName: client.ObjectKeyFromObject(oac),
 					})
-					Expect(err).To(MatchError("error while retrieving ignitionURL: cannot generate ignition url if events URL is not generated"))
+					Expect(err).To(MatchError("infraenv not ready: eventsURL not generated yet"))
 				})
 			},
 		)
@@ -300,7 +294,7 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: client.ObjectKeyFromObject(oac),
 				})
-				Expect(err).To(MatchError("infraenv not ready yet. CreatedTime: <nil>"))
+				Expect(err).To(MatchError("infraenv not ready: eventsURL not generated yet"))
 
 				// Verify that a pull secret is created
 				secret := &corev1.Secret{}
@@ -313,10 +307,11 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 				// Verify that the pull secret is referenced in the infraEnv, but not in the config
 				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oac), oac)).To(Succeed())
 				Expect(oac.Spec.PullSecretRef).To(BeNil())
-				Expect(oac.Status.InfraEnvRef).NotTo(BeNil())
 
-				infraEnv := &v1beta1.InfraEnv{}
-				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: oac.Status.InfraEnvRef.Name, Namespace: namespace}, infraEnv)).To(Succeed())
+				infraEnvs := v1beta1.InfraEnvList{}
+				Expect(k8sClient.List(ctx, &infraEnvs, client.MatchingLabels{bootstrapv1alpha2.OpenshiftAssistedConfigLabel: oac.Name})).To(Succeed())
+				Expect(len(infraEnvs.Items)).To(Equal(1))
+				infraEnv := infraEnvs.Items[0]
 				Expect(infraEnv.Spec.PullSecretRef).NotTo(BeNil())
 				Expect(infraEnv.Spec.PullSecretRef.Name).To(Equal("placeholder-pull-secret"))
 			})
@@ -329,7 +324,7 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 					mockResponse := `{"fake":"ignition"}`
 
 					mockHandler := func(req *http.Request) (*http.Response, error) {
-						if req.URL.Host != "assisted-service.assisted-installer.svc.cluster.local:8090" {
+						if req.URL.Host != "assisted-service.assisted-installer.com" {
 							return nil, fmt.Errorf("unexpected host: %s", req.URL.Host)
 						}
 						mockBody := io.NopCloser(strings.NewReader(mockResponse))
@@ -339,17 +334,15 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 							Header:     make(http.Header),
 						}, nil
 					}
-					controllerReconciler = &OpenshiftAssistedConfigReconciler{
-						Client: k8sClient,
-						Scheme: k8sClient.Scheme(),
-						HttpClient: &http.Client{
+					mockClientFactory := &mockHTTPClientFactory{
+						client: &http.Client{
 							Transport: &mockTransport{mockHandler: mockHandler},
 						},
-						AssistedInstallerConfig: assistedinstaller.ServiceConfig{
-							UseInternalImageURL:        true,
-							AssistedServiceName:        "assisted-service",
-							AssistedInstallerNamespace: "assisted-installer",
-						},
+					}
+					controllerReconciler = &OpenshiftAssistedConfigReconciler{
+						Client:            k8sClient,
+						Scheme:            k8sClient.Scheme(),
+						HTTPClientFactory: mockClientFactory,
 					}
 
 					oac := setupControlPlaneOpenshiftAssistedConfigWithPullSecretRef(ctx, k8sClient)
@@ -377,41 +370,83 @@ var _ = Describe("OpenshiftAssistedConfig Controller", func() {
 					Expect(string(ignition)).To(Equal(mockResponse))
 
 				})
-			},
-		)
+			})
+		When("HTTPClientFactory returns an error", func() {
+			It("should handle HTTP client creation errors gracefully", func() {
+				// Set up mock factory that returns an error
+				mockFactory := &mockHTTPClientFactory{
+					client: nil,
+					err:    fmt.Errorf("failed to create HTTP client: TLS certificate error"),
+				}
+
+				controllerReconciler = &OpenshiftAssistedConfigReconciler{
+					Client:            k8sClient,
+					Scheme:            k8sClient.Scheme(),
+					HTTPClientFactory: mockFactory,
+				}
+
+				oac := setupControlPlaneOpenshiftAssistedConfigWithPullSecretRef(ctx, k8sClient)
+				mockControlPlaneInitialization(ctx, k8sClient)
+				infraEnv := testutils.NewInfraEnv(namespace, machineName)
+				Expect(k8sClient.Create(ctx, infraEnv)).To(Succeed())
+				infraEnv.Status.InfraEnvDebugInfo.EventsURL = "http://assisted-service.assisted-installer.com/api/assisted-install/v2/events?api_key=test&infra_env_id=test"
+				Expect(k8sClient.Status().Update(ctx, infraEnv)).To(Succeed())
+
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: client.ObjectKeyFromObject(oac),
+				})
+
+				// Should return an error that includes the HTTP client creation failure
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("failed to create HTTP client"))
+				Expect(err.Error()).To(ContainSubstring("TLS certificate error"))
+
+				// Verify the condition is set correctly
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oac), oac)).To(Succeed())
+				condition := v1beta1conditions.Get(oac, bootstrapv1alpha2.DataSecretAvailableCondition)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(corev1.ConditionFalse))
+				Expect(condition.Reason).To(Equal(bootstrapv1alpha2.WaitingForAssistedInstallerReason))
+			})
+		})
+		When("HTTPClientFactory is nil", func() {
+			It("should return an error when HTTPClientFactory is not set", func() {
+				controllerReconciler = &OpenshiftAssistedConfigReconciler{
+					Client:            k8sClient,
+					Scheme:            k8sClient.Scheme(),
+					HTTPClientFactory: nil, // Explicitly set to nil
+				}
+
+				oac := setupControlPlaneOpenshiftAssistedConfigWithPullSecretRef(ctx, k8sClient)
+				mockControlPlaneInitialization(ctx, k8sClient)
+				infraEnv := testutils.NewInfraEnv(namespace, machineName)
+				Expect(k8sClient.Create(ctx, infraEnv)).To(Succeed())
+				infraEnv.Status.InfraEnvDebugInfo.EventsURL = "http://assisted-service.assisted-installer.com/api/assisted-install/v2/events?api_key=test&infra_env_id=test"
+				Expect(k8sClient.Status().Update(ctx, infraEnv)).To(Succeed())
+
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: client.ObjectKeyFromObject(oac),
+				})
+
+				// Should return an error about HTTPClientFactory not being set
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("HTTPClientFactory is not set"))
+
+				// Verify the condition is set correctly
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oac), oac)).To(Succeed())
+				condition := v1beta1conditions.Get(oac, bootstrapv1alpha2.DataSecretAvailableCondition)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(corev1.ConditionFalse))
+				Expect(condition.Reason).To(Equal(bootstrapv1alpha2.WaitingForAssistedInstallerReason))
+			})
+		})
+
 	})
 })
 
-func assertThereAreMatchingInfraEnvs(
-	ctx context.Context,
-	k8sClient client.Client,
-	oac *bootstrapv1alpha1.OpenshiftAssistedConfig,
-) {
-	infraEnvList := &v1beta1.InfraEnvList{}
-	Expect(
-		k8sClient.List(ctx, infraEnvList, client.MatchingLabels{bootstrapv1alpha1.OpenshiftAssistedConfigLabel: oacName}),
-	).To(Succeed())
-	Expect(len(infraEnvList.Items)).To(Equal(1))
-	infraEnv := infraEnvList.Items[0]
-	Expect(oac.Status.InfraEnvRef).ToNot(BeNil())
-
-	assertInfraEnvSpecs(infraEnv, oac)
-}
-
-func assertInfraEnvSpecs(infraEnv v1beta1.InfraEnv, oac *bootstrapv1alpha1.OpenshiftAssistedConfig) {
-	Expect(infraEnv.Name).To(Equal(oac.Status.InfraEnvRef.Name))
-	Expect(infraEnv.Spec.PullSecretRef).To(Equal(oac.Spec.PullSecretRef))
-	Expect(infraEnv.Spec.Proxy).To(Equal(oac.Spec.Proxy))
-	Expect(infraEnv.Spec.AdditionalNTPSources).To(Equal(oac.Spec.AdditionalNTPSources))
-	Expect(infraEnv.Spec.NMStateConfigLabelSelector).To(Equal(oac.Spec.NMStateConfigLabelSelector))
-	Expect(infraEnv.Spec.CpuArchitecture).To(Equal(oac.Spec.CpuArchitecture))
-	Expect(infraEnv.Spec.AdditionalTrustBundle).To(Equal(oac.Spec.AdditionalTrustBundle))
-	Expect(infraEnv.Spec.OSImageVersion).To(Equal(oac.Spec.OSImageVersion))
-}
-
 // mock controlplane provider generating ACI and CD
 func mockControlPlaneInitialization(ctx context.Context, k8sClient client.Client) {
-	cd := testutils.NewClusterDeploymentWithOwnerCluster(namespace, clusterName, clusterName)
+	cd := testutils.NewClusterDeploymentWithOwnerCluster(namespace, clusterName, clusterName, nil)
 	Expect(k8sClient.Create(ctx, cd)).To(Succeed())
 
 	aci := testutils.NewAgentClusterInstall(clusterName, namespace, clusterName)
@@ -424,17 +459,21 @@ func setupControlPlaneOpenshiftAssistedConfig(
 	ctx context.Context,
 	k8sClient client.Client,
 	pullSecretRef *corev1.LocalObjectReference,
-) *bootstrapv1alpha1.OpenshiftAssistedConfig {
+) *bootstrapv1alpha2.OpenshiftAssistedConfig {
 	cluster := testutils.NewCluster(clusterName, namespace)
 	Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
 	acp := testutils.NewOpenshiftAssistedControlPlane(namespace, acpName)
 	Expect(k8sClient.Create(ctx, acp)).Should(Succeed())
 	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(acp), acp)).To(Succeed())
+	// Restore TypeMeta after Get, as the fake client (like the real API server) clears it
+	acp.SetGroupVersionKind(controlplanev1alpha3.GroupVersion.WithKind("OpenshiftAssistedControlPlane"))
 
 	machine := testutils.NewMachineWithOwner(namespace, machineName, clusterName, acp)
 	Expect(k8sClient.Create(ctx, machine)).To(Succeed())
 	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(machine), machine)).To(Succeed())
+	// Restore TypeMeta after Get, as the fake client (like the real API server) clears it
+	machine.SetGroupVersionKind(clusterv1.GroupVersion.WithKind("Machine"))
 
 	oac := NewOpenshiftAssistedConfigWithOwner(namespace, oacName, clusterName, machine)
 	oac.Spec.PullSecretRef = pullSecretRef
@@ -462,7 +501,7 @@ func setupControlPlaneOpenshiftAssistedConfig(
 func setupControlPlaneOpenshiftAssistedConfigWithPullSecretRef(
 	ctx context.Context,
 	k8sClient client.Client,
-) *bootstrapv1alpha1.OpenshiftAssistedConfig {
+) *bootstrapv1alpha2.OpenshiftAssistedConfig {
 	pullSecretRef := &corev1.LocalObjectReference{Name: "my-pullsecret"}
 	return setupControlPlaneOpenshiftAssistedConfig(ctx, k8sClient, pullSecretRef)
 }
@@ -470,7 +509,7 @@ func setupControlPlaneOpenshiftAssistedConfigWithPullSecretRef(
 func NewOpenshiftAssistedConfigWithOwner(
 	namespace, name, clusterName string,
 	owner client.Object,
-) *bootstrapv1alpha1.OpenshiftAssistedConfig {
+) *bootstrapv1alpha2.OpenshiftAssistedConfig {
 	ownerGVK := owner.GetObjectKind().GroupVersionKind()
 	ownerRefs := []metav1.OwnerReference{
 		{

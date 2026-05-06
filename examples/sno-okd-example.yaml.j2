@@ -1,5 +1,5 @@
 ---
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
   name: test-sno-okd
@@ -13,15 +13,13 @@ spec:
       cidrBlocks:
         - 10.96.0.0/12
   controlPlaneRef:
-    apiVersion: controlplane.cluster.x-k8s.io/v1alpha2
+    apiGroup: controlplane.cluster.x-k8s.io
     kind: OpenshiftAssistedControlPlane
     name: test-sno-okd
-    namespace: test-capi
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: Metal3Cluster
     name: test-sno-okd
-    namespace: test-capi
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: Metal3Cluster
@@ -34,7 +32,7 @@ spec:
     port: 6443
   noCloudProvider: true
 ---
-apiVersion: controlplane.cluster.x-k8s.io/v1alpha2
+apiVersion: controlplane.cluster.x-k8s.io/v1alpha3
 kind: OpenshiftAssistedControlPlane
 metadata:
   name: test-sno-okd
@@ -45,18 +43,18 @@ spec:
   openshiftAssistedConfigSpec:
     sshAuthorizedKey: "{{ ssh_authorized_key }}"
     nodeRegistration:
+      name: "$METADATA_NAME"
       kubeletExtraLabels:
-        - 'metal3.io/uuid="${METADATA_UUID}"'
-  distributionVersion: 4.19.0-okd-scos.ec.6
+      - metal3.io/uuid=$METADATA_UUID
+  distributionVersion: "{{ openshift_version }}"
   config:
     baseDomain: lab.home
     sshAuthorizedKey: "{{ ssh_authorized_key }}"
   machineTemplate:
     infrastructureRef:
-      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      apiGroup: infrastructure.cluster.x-k8s.io
       kind: Metal3MachineTemplate
       name: test-sno-okd-controlplane
-      namespace: test-capi
   replicas: 1
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
@@ -72,9 +70,9 @@ spec:
       dataTemplate:
         name: test-sno-okd-controlplane-template
       image:
-        checksum: https://cloud.centos.org/centos/scos/9/prod/streams/latest/x86_64/sha256sum.txt
+        checksum: {{ rhcos_checksum_url }}
         checksumType: sha256
-        url: https://cloud.centos.org/centos/scos/9/prod/streams/latest/x86_64/scos-9.0.20250411-0-nutanix.x86_64.qcow2
+        url: {{ rhcos_image_url }}
         format: qcow2
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1

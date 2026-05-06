@@ -17,8 +17,10 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 
 	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/internal/upgrade"
@@ -28,66 +30,94 @@ import (
 
 	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/internal/version"
 
-	bootstrapv1alpha1 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/bootstrap/api/v1alpha1"
+	bootstrapv1alpha2 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/bootstrap/api/v1alpha2"
+	configv1 "github.com/openshift/api/config/v1"
 	hiveext "github.com/openshift/assisted-service/api/hiveextension/v1beta1"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
-
+	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	cliflag "k8s.io/component-base/cli/flag"
+	"k8s.io/component-base/logs"
+	logsv1 "k8s.io/component-base/logs/api/v1"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	controlplanev1alpha1 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/api/v1alpha2"
+	controlplanev1alpha2 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/api/v1alpha2"
+	controlplanev1alpha3 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/api/v1alpha3"
 	controlplanecontroller "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/internal/controller"
+	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/internal/openshift"
+	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/internal/setup"
+	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/util/log"
 )
 
 var (
-	scheme   = runtime.NewScheme()
-	setupLog = ctrl.Log.WithName("setup")
+	scheme     = runtime.NewScheme()
+	logOptions = logs.NewOptions()
+
+	// Options
+	metricsAddr          string
+	enableLeaderElection bool
+	probeAddr            string
+	secureMetrics        bool
+	enableHTTP2          bool
 )
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(controlplanev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(controlplanev1alpha2.AddToScheme(scheme))
+	utilruntime.Must(controlplanev1alpha3.AddToScheme(scheme))
 	utilruntime.Must(clusterv1.AddToScheme(scheme))
 	utilruntime.Must(hivev1.AddToScheme(scheme))
 	utilruntime.Must(hiveext.AddToScheme(scheme))
-	utilruntime.Must(bootstrapv1alpha1.AddToScheme(scheme))
-
+	utilruntime.Must(bootstrapv1alpha2.AddToScheme(scheme))
+	utilruntime.Must(configv1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
-func main() {
-	var metricsAddr string
-	var enableLeaderElection bool
-	var probeAddr string
-	var secureMetrics bool
-	var enableHTTP2 bool
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+func initFlags(fs *pflag.FlagSet) {
+	logsv1.AddFlags(logOptions, fs)
+	fs.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	fs.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	fs.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", false,
+	fs.BoolVar(&secureMetrics, "metrics-secure", false,
 		"If set the metrics endpoint is served securely")
-	flag.BoolVar(&enableHTTP2, "enable-http2", false,
+	fs.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	opts := zap.Options{
-		Development: true,
-	}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
+}
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+func main() {
+	initFlags(pflag.CommandLine)
+	pflag.CommandLine.SetNormalizeFunc(cliflag.WordSepNormalizeFunc)
+	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
+	// Set log level 1 as default.
+	if err := pflag.CommandLine.Set("v", "3"); err != nil {
+		fmt.Println("failed to set default log level", err)
+		os.Exit(1)
+	}
+
+	pflag.Parse()
+
+	// Validate and apply log configuration
+	if err := logsv1.ValidateAndApply(logOptions, nil); err != nil {
+		fmt.Printf("error validating log options: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctrl.SetLogger(klog.NewKlogr())
+	setupLog := ctrl.Log.WithName("setup")
+	setupLog.V(log.DebugLevel).Info("logging initialized")
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -105,11 +135,31 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
+	clientConfig := ctrl.GetConfigOrDie()
+
+	isOpenShift, err := openshift.IsOpenShift(context.Background(), clientConfig)
+	if err != nil {
+		setupLog.Error(err, "unable to detect cluster type")
+		os.Exit(1)
+	}
+
+	tlsResult, err := setup.ResolveTLSConfig(context.Background(), clientConfig, isOpenShift)
+	if err != nil {
+		setupLog.Error(err, "unable to resolve TLS config")
+		os.Exit(1)
+	}
+	if tlsResult.TLSConfig != nil {
+		tlsOpts = append(tlsOpts, tlsResult.TLSConfig)
+	}
+
 	webhookServer := webhook.NewServer(webhook.Options{
 		TLSOpts: tlsOpts,
+		Port:    9443,
+		Host:    "0.0.0.0",
+		CertDir: "/tmp/k8s-webhook-server/serving-certs",
 	})
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(clientConfig, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
@@ -161,6 +211,10 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentClusterInstall")
 		os.Exit(1)
 	}
+	if err = (&controlplanev1alpha3.OpenshiftAssistedControlPlane{}).SetupWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "OpenshiftAssistedControlPlane")
+		os.Exit(1)
+	}
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -172,8 +226,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	ctx := ctrl.SetupSignalHandler()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if err := setup.SetupSecurityProfileWatcher(mgr, tlsResult, isOpenShift, cancel); err != nil {
+		setupLog.Error(err, "unable to create TLS security profile watcher")
+		os.Exit(1)
+	}
+
+	setupLog.V(log.DebugLevel).Info("starting manager")
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

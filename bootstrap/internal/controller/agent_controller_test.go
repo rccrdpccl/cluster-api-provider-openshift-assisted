@@ -18,17 +18,20 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	bootstrapv1alpha1 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/bootstrap/api/v1alpha1"
+	bootstrapv1alpha2 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/bootstrap/api/v1alpha2"
 	testutils "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/test/utils"
-	"github.com/openshift/assisted-service/api/v1beta1"
+	aiv1beta1 "github.com/openshift/assisted-service/api/v1beta1"
 	"github.com/openshift/assisted-service/models"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -44,7 +47,7 @@ var _ = Describe("Agent Controller", func() {
 		)
 		BeforeEach(func() {
 			k8sClient = fakeclient.NewClientBuilder().WithScheme(testScheme).
-				WithStatusSubresource(&bootstrapv1alpha1.OpenshiftAssistedConfig{}).
+				WithStatusSubresource(&bootstrapv1alpha2.OpenshiftAssistedConfig{}).
 				Build()
 			Expect(k8sClient).NotTo(BeNil())
 
@@ -101,7 +104,7 @@ var _ = Describe("Agent Controller", func() {
 					NamespacedName: client.ObjectKeyFromObject(agent),
 				})
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(Equal("couldn't find *v1beta1.Machine owner for *v1beta1.InfraEnv"))
+				Expect(err.Error()).To(Equal("couldn't find *v1beta2.Machine owner for *v1beta1.InfraEnv"))
 			})
 		})
 		When("an Agent resource exists with an infraenv, but machine has no OAC reference", func() {
@@ -133,9 +136,8 @@ var _ = Describe("Agent Controller", func() {
 				infraEnv := testutils.NewInfraEnv(namespace, machineName)
 
 				machine := testutils.NewMachine(namespace, machineName, clusterName)
-				machine.Spec.Bootstrap.ConfigRef = &corev1.ObjectReference{
-					Name:      oacName,
-					Namespace: namespace,
+				machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+					Name: oacName,
 				}
 				Expect(controllerutil.SetOwnerReference(machine, infraEnv, testScheme)).To(Succeed())
 				Expect(k8sClient.Create(ctx, machine)).To(Succeed())
@@ -162,9 +164,8 @@ var _ = Describe("Agent Controller", func() {
 
 				infraEnv := testutils.NewInfraEnv(namespace, machineName)
 				machine := testutils.NewMachine(namespace, machineName, clusterName)
-				machine.Spec.Bootstrap.ConfigRef = &corev1.ObjectReference{
-					Name:      oacName,
-					Namespace: namespace,
+				machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+					Name: oacName,
 				}
 				Expect(controllerutil.SetOwnerReference(machine, infraEnv, testScheme)).To(Succeed())
 				Expect(k8sClient.Create(ctx, machine)).To(Succeed())
@@ -175,45 +176,11 @@ var _ = Describe("Agent Controller", func() {
 					NamespacedName: client.ObjectKeyFromObject(agent),
 				})
 				Expect(err).NotTo(HaveOccurred())
-				expectedOAC := bootstrapv1alpha1.OpenshiftAssistedConfig{}
+				expectedOAC := bootstrapv1alpha2.OpenshiftAssistedConfig{}
 				Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: oacName}, &expectedOAC)).To(Succeed())
-				Expect(expectedOAC.Status.AgentRef).NotTo(BeNil())
-				Expect(expectedOAC.Status.AgentRef.Name).To(Equal(agentName))
+
 			})
 		})
-		When("an Agent resource with a valid Machine with OACs, and agent ref", func() {
-			It("should add the agent ref to OAC status", func() {
-
-				agent := testutils.NewAgentWithInfraEnvLabel(namespace, agentName, machineName)
-				Expect(k8sClient.Create(ctx, agent)).To(Succeed())
-
-				By("Creating the OpenshiftAssistedConfig")
-				oac := testutils.NewOpenshiftAssistedConfig(namespace, oacName, clusterName)
-				oac.Status.AgentRef = &corev1.LocalObjectReference{Name: agent.Name}
-				Expect(k8sClient.Create(ctx, oac)).To(Succeed())
-
-				infraEnv := testutils.NewInfraEnv(namespace, machineName)
-				machine := testutils.NewMachine(namespace, machineName, clusterName)
-				machine.Spec.Bootstrap.ConfigRef = &corev1.ObjectReference{
-					Name:      oacName,
-					Namespace: namespace,
-				}
-				Expect(controllerutil.SetOwnerReference(machine, infraEnv, testScheme)).To(Succeed())
-				Expect(k8sClient.Create(ctx, machine)).To(Succeed())
-				Expect(k8sClient.Create(ctx, infraEnv)).To(Succeed())
-
-				By("Reconciling the Agent")
-				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: client.ObjectKeyFromObject(agent),
-				})
-				Expect(err).NotTo(HaveOccurred())
-				expectedOAC := bootstrapv1alpha1.OpenshiftAssistedConfig{}
-				Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: oacName}, &expectedOAC)).To(Succeed())
-				Expect(expectedOAC.Status.AgentRef).NotTo(BeNil())
-				Expect(expectedOAC.Status.AgentRef.Name).To(Equal(agentName))
-			})
-		})
-
 		When("an Agent resource with matching InfraEnv, and machine (worker)", func() {
 			It("should reconcile with a valid accepted worker agent", func() {
 				By("Creating the OpenshiftAssistedConfig")
@@ -221,9 +188,8 @@ var _ = Describe("Agent Controller", func() {
 				Expect(k8sClient.Create(ctx, oac)).To(Succeed())
 
 				machine := testutils.NewMachine(namespace, machineName, clusterName)
-				machine.Spec.Bootstrap.ConfigRef = &corev1.ObjectReference{
-					Name:      oacName,
-					Namespace: namespace,
+				machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+					Name: oacName,
 				}
 				Expect(k8sClient.Create(ctx, machine)).To(Succeed())
 
@@ -254,9 +220,8 @@ var _ = Describe("Agent Controller", func() {
 				Expect(k8sClient.Create(ctx, oac)).To(Succeed())
 
 				machine := testutils.NewMachine(namespace, machineName, clusterName)
-				machine.Spec.Bootstrap.ConfigRef = &corev1.ObjectReference{
-					Name:      oacName,
-					Namespace: namespace,
+				machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+					Name: oacName,
 				}
 				machine.Labels[clusterv1.MachineControlPlaneLabel] = "control-plane"
 				Expect(k8sClient.Create(ctx, machine)).To(Succeed())
@@ -279,17 +244,13 @@ var _ = Describe("Agent Controller", func() {
 				By("Checking the result of the reconciliation")
 				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(agent), agent)).To(Succeed())
 				assertAgentIsReadyWithRole(agent, models.HostRoleMaster)
-				postOAC := &bootstrapv1alpha1.OpenshiftAssistedConfig{}
-				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oac), postOAC)).To(Succeed())
-				Expect(postOAC.Status.AgentRef).NotTo(BeNil())
-				Expect(postOAC.Status.AgentRef.Name).To(Equal(agent.Name))
 			})
 		})
 
 		When("a bootstrap config has configured kernel args", func() {
 			It("should reconcile with a valid coreos install args", func() {
 				oac := testutils.NewOpenshiftAssistedConfig(namespace, oacName, clusterName)
-				oac.Spec.KernelArguments = []v1beta1.KernelArgument{
+				oac.Spec.KernelArguments = []aiv1beta1.KernelArgument{
 					{
 						Operation: "append",
 						Value:     "console=tty0 console=ttyS0,115200n8",
@@ -302,9 +263,8 @@ var _ = Describe("Agent Controller", func() {
 				Expect(k8sClient.Create(ctx, oac)).To(Succeed())
 
 				machine := testutils.NewMachine(namespace, machineName, clusterName)
-				machine.Spec.Bootstrap.ConfigRef = &corev1.ObjectReference{
-					Name:      oacName,
-					Namespace: namespace,
+				machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+					Name: oacName,
 				}
 				machine.Labels[clusterv1.MachineControlPlaneLabel] = "control-plane"
 				Expect(k8sClient.Create(ctx, machine)).To(Succeed())
@@ -338,9 +298,8 @@ var _ = Describe("Agent Controller", func() {
 				Expect(k8sClient.Create(ctx, oac)).To(Succeed())
 
 				machine := testutils.NewMachine(namespace, machineName, clusterName)
-				machine.Spec.Bootstrap.ConfigRef = &corev1.ObjectReference{
-					Name:      oacName,
-					Namespace: namespace,
+				machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+					Name: oacName,
 				}
 				Expect(k8sClient.Create(ctx, machine)).To(Succeed())
 
@@ -380,9 +339,8 @@ var _ = Describe("Agent Controller", func() {
 				Expect(k8sClient.Create(ctx, oac)).To(Succeed())
 
 				machine := testutils.NewMachine(namespace, machineName, clusterName)
-				machine.Spec.Bootstrap.ConfigRef = &corev1.ObjectReference{
-					Name:      oacName,
-					Namespace: namespace,
+				machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+					Name: oacName,
 				}
 				Expect(k8sClient.Create(ctx, machine)).To(Succeed())
 
@@ -405,8 +363,544 @@ var _ = Describe("Agent Controller", func() {
 	})
 })
 
-func assertAgentIsReadyWithRole(agent *v1beta1.Agent, role models.HostRole) {
+func assertAgentIsReadyWithRole(agent *aiv1beta1.Agent, role models.HostRole) {
 	Expect(agent.Spec.Role).To(Equal(role))
 	Expect(agent.Spec.IgnitionConfigOverrides).NotTo(BeEmpty())
 	Expect(agent.Spec.Approved).To(BeTrue())
+}
+
+var _ = Describe("getIgnitionConfig", func() {
+	Context("Discovery phase ignition", func() {
+		It("should include set-hostname unit when Name is set", func() {
+			config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+				Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+					NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+						Name:               "$METADATA_NAME",
+						KubeletExtraLabels: []string{"zone=east"},
+					},
+				},
+			}
+
+			ignitionJSON, err := getIgnitionConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ignitionJSON).NotTo(BeEmpty())
+
+			// Verify valid ignition JSON
+			Expect(ignitionJSON).To(ContainSubstring(`"version":"3.1.0"`))
+			// Verify set-hostname.service unit is included in discovery phase
+			Expect(ignitionJSON).To(ContainSubstring(`set-hostname.service`))
+			Expect(ignitionJSON).To(ContainSubstring(`/usr/local/bin/set_hostname`))
+		})
+
+		It("should not include set-hostname unit when Name is empty", func() {
+			config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+				Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+					NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+						KubeletExtraLabels: []string{"zone=east", "env=prod"},
+					},
+				},
+			}
+
+			ignitionJSON, err := getIgnitionConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ignitionJSON).NotTo(BeEmpty())
+			// Verify set-hostname.service unit is NOT included when Name is empty
+			Expect(ignitionJSON).NotTo(ContainSubstring(`set-hostname.service`))
+			// Verify kubelet custom labels script is included
+			Expect(ignitionJSON).To(ContainSubstring(`kubelet_custom_labels`))
+		})
+
+		DescribeTable("should handle variable notation in KubeletExtraLabels",
+			func(labelValue string) {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							KubeletExtraLabels: []string{"node-id=" + labelValue},
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				var ignConfig map[string]interface{}
+				Expect(json.Unmarshal([]byte(ignitionJSON), &ignConfig)).To(Succeed())
+
+				storage := ignConfig["storage"].(map[string]interface{})
+				files := storage["files"].([]interface{})
+
+				var scriptContent string
+				for _, f := range files {
+					file := f.(map[string]interface{})
+					if file["path"] == "/usr/local/bin/kubelet_custom_labels" {
+						contents := file["contents"].(map[string]interface{})
+						source := contents["source"].(string)
+						b64Data := strings.TrimPrefix(source, "data:text/plain;charset=utf-8;base64,")
+						decoded, err := base64.StdEncoding.DecodeString(b64Data)
+						Expect(err).NotTo(HaveOccurred())
+						scriptContent = string(decoded)
+						break
+					}
+				}
+
+				// Both $VAR and ${VAR} are normalized to ${VAR} and resolved via grep
+				Expect(scriptContent).To(ContainSubstring(`METADATA_UUID=$(/usr/bin/grep "^METADATA_UUID=" /etc/metadata_env`))
+				Expect(scriptContent).To(ContainSubstring("node-id=${METADATA_UUID}"))
+			},
+			Entry("$VAR notation", "$METADATA_UUID"),
+			Entry("${VAR} notation", "${METADATA_UUID}"),
+		)
+
+		DescribeTable("should reject invalid variable names in KubeletExtraLabels",
+			func(labelValue string) {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							KubeletExtraLabels: []string{"node-id=" + labelValue},
+						},
+					},
+				}
+
+				_, err := getIgnitionConfig(config)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("invalid"))
+			},
+			Entry("command substitution", "$VAR$(whoami)"),
+			Entry("backticks", "$VAR`id`"),
+			Entry("starts with digit", "$1VAR"),
+			Entry("contains hyphen", "$VAR-NAME"),
+			Entry("contains semicolon", "$VAR;echo"),
+			Entry("contains space", "$VAR NAME"),
+		)
+
+		Context("ignition-override annotation", func() {
+			const validOverride = `{"ignition":{"version":"3.1.0"},"storage":{"files":[{"path":"/etc/override-file","contents":{"source":"data:,"},"mode":384}]}}`
+
+			It("should merge valid ignition-override annotation into host ignition", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							bootstrapv1alpha2.IgnitionOverrideAnnotation: validOverride,
+						},
+					},
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							KubeletExtraLabels: []string{"zone=east"},
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).To(ContainSubstring(`/etc/override-file`))
+				Expect(ignitionJSON).To(ContainSubstring(`kubelet_custom_labels`))
+			})
+
+			It("should ignore annotation when value is not valid JSON", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							bootstrapv1alpha2.IgnitionOverrideAnnotation: `not-json`,
+						},
+					},
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							KubeletExtraLabels: []string{"zone=east"},
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).NotTo(ContainSubstring(`/etc/override-file`))
+				Expect(ignitionJSON).To(ContainSubstring(`kubelet_custom_labels`))
+			})
+
+			It("should return error when annotation is valid JSON but invalid ignition", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							// Unknown ignition version so parse fails
+							bootstrapv1alpha2.IgnitionOverrideAnnotation: `{"ignition":{"version":"99.0.0"}}`,
+						},
+					},
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							KubeletExtraLabels: []string{"zone=east"},
+						},
+					},
+				}
+
+				_, err := getIgnitionConfig(config)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring(bootstrapv1alpha2.IgnitionOverrideAnnotation))
+			})
+		})
+
+		Context("PreBootstrapCommands and PostBootstrapCommands", func() {
+			It("should include pre-bootstrap unit in ignition when preBootstrapCommands are set", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						PreBootstrapCommands: []string{
+							"sgdisk -n 1:0:0 /dev/sdb",
+							"mkfs.xfs /dev/sdb1",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).To(ContainSubstring("capoa-pre-bootstrap.service"))
+				Expect(ignitionJSON).To(ContainSubstring("capoa-pre-bootstrap.sh"))
+			})
+
+			It("should include post-bootstrap unit in ignition when postBootstrapCommands are set", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						PostBootstrapCommands: []string{
+							"systemctl enable custom-agent",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).To(ContainSubstring("capoa-post-bootstrap.service"))
+				Expect(ignitionJSON).To(ContainSubstring("capoa-post-bootstrap.sh"))
+			})
+
+			It("should not include bootstrap units when no commands are set", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							KubeletExtraLabels: []string{"zone=east"},
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).NotTo(ContainSubstring("capoa-pre-bootstrap"))
+				Expect(ignitionJSON).NotTo(ContainSubstring("capoa-post-bootstrap"))
+			})
+
+			It("should include both pre and post bootstrap units alongside other config", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						PreBootstrapCommands:  []string{"echo pre"},
+						PostBootstrapCommands: []string{"echo post"},
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							Name:               "$METADATA_NAME",
+							KubeletExtraLabels: []string{"zone=east"},
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).To(ContainSubstring("capoa-pre-bootstrap.service"))
+				Expect(ignitionJSON).To(ContainSubstring("capoa-post-bootstrap.service"))
+				Expect(ignitionJSON).To(ContainSubstring("set-hostname.service"))
+				Expect(ignitionJSON).To(ContainSubstring("kubelet_custom_labels"))
+			})
+
+			It("should include pre-bootstrap commands in script content", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						PreBootstrapCommands: []string{
+							"grubby --update-kernel=ALL --args='isolcpus=2-7'",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractScriptFromIgnitionJSON(ignitionJSON, "/usr/local/bin/capoa-pre-bootstrap.sh")
+				Expect(scriptContent).To(ContainSubstring("grubby --update-kernel=ALL --args='isolcpus=2-7'"))
+				Expect(scriptContent).To(ContainSubstring("set -euo pipefail"))
+				Expect(scriptContent).To(ContainSubstring("/var/lib/capoa/pre-bootstrap.done"))
+			})
+
+			It("should work with ignition-override annotation and bootstrap commands", func() {
+				validOverride := `{"ignition":{"version":"3.1.0"},"storage":{"files":[{"path":"/etc/override-file","contents":{"source":"data:,"},"mode":384}]}}`
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							bootstrapv1alpha2.IgnitionOverrideAnnotation: validOverride,
+						},
+					},
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						PreBootstrapCommands: []string{"echo pre"},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).To(ContainSubstring("capoa-pre-bootstrap.service"))
+				Expect(ignitionJSON).To(ContainSubstring("/etc/override-file"))
+			})
+
+			It("should use a custom sentinel directory when configured", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						BootstrapCommandSentinelDir: "/etc/capoa-state",
+						PreBootstrapCommands:        []string{"echo pre"},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).To(ContainSubstring("/etc/capoa-state/pre-bootstrap.done"))
+			})
+		})
+
+		Context("ProviderID", func() {
+			It("should write KUBELET_PROVIDERID with static value", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID: "metal3://my-node-uuid",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				Expect(scriptContent).To(ContainSubstring(`KUBELET_PROVIDERID=metal3://my-node-uuid`))
+			})
+
+			It("should write KUBELET_PROVIDERID with dynamic value from env var", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID: "$METADATA_UUID",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				Expect(scriptContent).To(ContainSubstring(`METADATA_UUID=$(/usr/bin/grep "^METADATA_UUID=" /etc/metadata_env`))
+				Expect(scriptContent).To(ContainSubstring(`KUBELET_PROVIDERID=${METADATA_UUID}`))
+			})
+
+			It("should write KUBELET_PROVIDERID with ${VAR} notation", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID: "${METADATA_UUID}",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				Expect(scriptContent).To(ContainSubstring(`METADATA_UUID=$(/usr/bin/grep "^METADATA_UUID=" /etc/metadata_env`))
+				Expect(scriptContent).To(ContainSubstring(`KUBELET_PROVIDERID=${METADATA_UUID}`))
+			})
+
+			It("should not write KUBELET_PROVIDERID when ProviderID is empty", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							KubeletExtraLabels: []string{"zone=east"},
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				Expect(scriptContent).NotTo(ContainSubstring(`KUBELET_PROVIDERID`))
+			})
+
+			It("should reject invalid variable names in ProviderID", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID: "$INVALID;echo",
+						},
+					},
+				}
+
+				_, err := getIgnitionConfig(config)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("invalid"))
+			})
+
+			It("should handle ProviderID and KubeletExtraLabels together with shared dynamic var", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID:         "$METADATA_UUID",
+							KubeletExtraLabels: []string{"node-id=$METADATA_UUID", "zone=east"},
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				// Variable should only be resolved once
+				count := strings.Count(scriptContent, `METADATA_UUID=$(/usr/bin/grep "^METADATA_UUID=" /etc/metadata_env`)
+				Expect(count).To(Equal(1))
+				// Both should use the same variable
+				Expect(scriptContent).To(ContainSubstring(`node-id=${METADATA_UUID}`))
+				Expect(scriptContent).To(ContainSubstring(`KUBELET_PROVIDERID=${METADATA_UUID}`))
+			})
+		})
+
+		Context("kubelet provider-id injection service", func() {
+			It("should include provider-id injection service in agent ignition when ProviderID is set", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID: "openstack://12345",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).To(ContainSubstring("inject-provider-id"))
+				Expect(ignitionJSON).To(ContainSubstring("capoa-inject-provider-id.service"))
+			})
+
+			It("should not include provider-id injection service when ProviderID is empty", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							KubeletExtraLabels: []string{"zone=east"},
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ignitionJSON).NotTo(ContainSubstring("inject-provider-id"))
+			})
+		})
+
+		Context("kubelet providerID file generation", func() {
+			It("should write /run/kubelet-provider-id with static providerID", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID: "openstack://12345",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				Expect(scriptContent).NotTo(BeEmpty())
+				Expect(scriptContent).To(ContainSubstring(`echo 'openstack://12345' > /run/kubelet-provider-id`))
+			})
+
+			It("should write /run/kubelet-provider-id with dynamic providerID", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID: "$METADATA_UUID",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				Expect(scriptContent).NotTo(BeEmpty())
+				Expect(scriptContent).To(ContainSubstring(`METADATA_UUID=""`))
+				Expect(scriptContent).To(ContainSubstring(`echo "${METADATA_UUID}" > /run/kubelet-provider-id`))
+			})
+
+			It("should not write /run/kubelet-provider-id when providerID is empty", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							KubeletExtraLabels: []string{"zone=east"},
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				Expect(scriptContent).NotTo(BeEmpty())
+				Expect(scriptContent).NotTo(ContainSubstring("/run/kubelet-provider-id"))
+			})
+
+			It("should trim whitespace from static providerID", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID: "  openstack://12345  ",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				Expect(scriptContent).NotTo(BeEmpty())
+				Expect(scriptContent).To(ContainSubstring(`echo 'openstack://12345' > /run/kubelet-provider-id`))
+			})
+
+			It("should escape single quotes in static providerID", func() {
+				config := &bootstrapv1alpha2.OpenshiftAssistedConfig{
+					Spec: bootstrapv1alpha2.OpenshiftAssistedConfigSpec{
+						NodeRegistration: bootstrapv1alpha2.NodeRegistrationOptions{
+							ProviderID: "provider://it's-id",
+						},
+					},
+				}
+
+				ignitionJSON, err := getIgnitionConfig(config)
+				Expect(err).NotTo(HaveOccurred())
+
+				scriptContent := extractKubeletCustomLabelsScript(ignitionJSON)
+				Expect(scriptContent).NotTo(BeEmpty())
+				Expect(scriptContent).To(ContainSubstring(`echo 'provider://it'"'"'s-id' > /run/kubelet-provider-id`))
+			})
+		})
+	})
+})
+
+func extractScriptFromIgnitionJSON(ignitionJSON, scriptPath string) string {
+	var ignConfig map[string]interface{}
+	Expect(json.Unmarshal([]byte(ignitionJSON), &ignConfig)).To(Succeed())
+
+	storage := ignConfig["storage"].(map[string]interface{})
+	files := storage["files"].([]interface{})
+
+	for _, f := range files {
+		file := f.(map[string]interface{})
+		if file["path"] == scriptPath {
+			contents := file["contents"].(map[string]interface{})
+			source := contents["source"].(string)
+			b64Data := strings.TrimPrefix(source, "data:text/plain;charset=utf-8;base64,")
+			decoded, err := base64.StdEncoding.DecodeString(b64Data)
+			Expect(err).NotTo(HaveOccurred())
+			return string(decoded)
+		}
+	}
+	return ""
+}
+
+func extractKubeletCustomLabelsScript(ignitionJSON string) string {
+	return extractScriptFromIgnitionJSON(ignitionJSON, "/usr/local/bin/kubelet_custom_labels")
 }

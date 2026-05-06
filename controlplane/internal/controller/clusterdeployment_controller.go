@@ -24,7 +24,7 @@ import (
 	"slices"
 	"strings"
 
-	controlplanev1alpha2 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/api/v1alpha2"
+	controlplanev1alpha3 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/api/v1alpha3"
 	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/internal/imageregistry"
 	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/controlplane/internal/release"
 	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/util"
@@ -39,12 +39,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	capiutil "sigs.k8s.io/cluster-api/util"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const (
@@ -65,35 +66,56 @@ type ClusterDeploymentReconciler struct {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Only watch ClusterDeployments that have the CAPI cluster label
+	clusterLabelPredicate, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      clusterv1.ClusterNameLabel,
+				Operator: metav1.LabelSelectorOpExists,
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hivev1.ClusterDeployment{}).
-		Watches(&controlplanev1alpha2.OpenshiftAssistedControlPlane{}, &handler.EnqueueRequestForObject{}).
+		WithEventFilter(clusterLabelPredicate).
+		Watches(&controlplanev1alpha3.OpenshiftAssistedControlPlane{}, &handler.EnqueueRequestForObject{}).
 		Watches(&clusterv1.MachineDeployment{}, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 }
+
+// +kubebuilder:rbac:groups=hive.openshift.io,resources=clusterdeployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=openshiftassistedcontrolplanes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machinedeployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=extensions.hive.openshift.io,resources=agentclusterinstalls,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=hive.openshift.io,resources=clusterimagesets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ClusterDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
 	clusterDeployment := &hivev1.ClusterDeployment{}
-	if err := r.Client.Get(ctx, req.NamespacedName, clusterDeployment); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, clusterDeployment); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	log.WithValues("cluster_deployment", clusterDeployment.Name, "cluster_deployment_namespace", clusterDeployment.Namespace)
-	log.V(logutil.TraceLevel).Info("Reconciling ClusterDeployment")
+	log.V(logutil.DebugLevel).Info("reconciling ClusterDeployment")
 
-	acp := controlplanev1alpha2.OpenshiftAssistedControlPlane{}
-	if err := util.GetTypedOwner(ctx, r.Client, clusterDeployment, &acp); err != nil {
-		log.V(logutil.TraceLevel).Info("Cluster deployment is not owned by OpenshiftAssistedControlPlane")
-		return ctrl.Result{}, nil
+	acp := &controlplanev1alpha3.OpenshiftAssistedControlPlane{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: clusterDeployment.Namespace, Name: clusterDeployment.Name}, acp); err != nil {
+		log.V(logutil.DebugLevel).Info("OpenshiftAssistedControlPlane not found for ClusterDeployment", "clusterDeployment", clusterDeployment.Name)
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	log.WithValues("openshiftassisted_control_plane", acp.Name, "openshiftassisted_control_plane_namespace", acp.Namespace)
 
-	arch, err := getArchitectureFromBootstrapConfigs(ctx, r.Client, &acp)
+	arch, err := getArchitectureFromBootstrapConfigs(ctx, r.Client, acp)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if err = ensureClusterImageSet(ctx, r.Client, clusterDeployment.Name, getReleaseImage(acp, arch)); err != nil {
+	if err = ensureClusterImageSet(ctx, r.Client, clusterDeployment.Name, getReleaseImage(*acp, arch)); err != nil {
 		log.Error(err, "failed creating ClusterImageSet")
 		return ctrl.Result{}, err
 	}
@@ -105,7 +127,7 @@ func (r *ClusterDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	if err := r.ensureAgentClusterInstall(ctx, clusterDeployment, acp); err != nil {
+	if err := r.ensureAgentClusterInstall(ctx, clusterDeployment, *acp); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -115,7 +137,7 @@ func (r *ClusterDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(
 	ctx context.Context,
 	clusterDeployment *hivev1.ClusterDeployment,
-	oacp controlplanev1alpha2.OpenshiftAssistedControlPlane,
+	oacp controlplanev1alpha3.OpenshiftAssistedControlPlane,
 ) error {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -136,13 +158,14 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(
 		},
 	}
 	mutate := func() error {
-		aci.ObjectMeta.Labels = util.ControlPlaneMachineLabelsForCluster(
+		aci.Labels = util.ControlPlaneMachineLabelsForCluster(
 			&oacp,
 			clusterDeployment.Labels[clusterv1.ClusterNameLabel],
 		)
-		aci.ObjectMeta.Labels[hiveext.ClusterConsumerLabel] = openshiftAssistedControlPlaneKind
-		aci.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
-			*metav1.NewControllerRef(&oacp, controlplanev1alpha2.GroupVersion.WithKind(openshiftAssistedControlPlaneKind)),
+		aci.Labels[hiveext.ClusterConsumerLabel] = openshiftAssistedControlPlaneKind
+
+		if err := controllerutil.SetOwnerReference(&oacp, aci, r.Scheme); err != nil {
+			log.V(logutil.WarningLevel).Info("failed to set owner reference on AgentClusterInstall", "error", err.Error())
 		}
 
 		aci.Spec.ClusterDeploymentRef = corev1.LocalObjectReference{Name: clusterDeployment.Name}
@@ -165,9 +188,17 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(
 			aci.Spec.IngressVIPs = oacp.Spec.Config.IngressVIPs
 			aci.Spec.PlatformType = hiveext.PlatformType(configv1.BareMetalPlatformType)
 		}
-		if err := setACICapabilities(&oacp, aci); err != nil {
+		installConfigOverride, err := getInstallConfigOverride(&oacp, aci)
+		if err != nil {
 			return err
 		}
+		if installConfigOverride != "" {
+			if aci.Annotations == nil {
+				aci.Annotations = make(map[string]string)
+			}
+			aci.Annotations[InstallConfigOverrides] = installConfigOverride
+		}
+
 		return nil
 	}
 
@@ -185,7 +216,7 @@ func (r *ClusterDeploymentReconciler) ensureAgentClusterInstall(
 // quay.io/openshift-release-dev/ocp-release:4.17.0-rc.2-x86_64
 // quay.io/okd/scos-release:4.18.0-okd-scos.ec.1
 // Can be overridden with annotation: cluster.x-k8s.io/release-image-repository-override=quay.io/myorg/myrepo
-func getReleaseImage(oacp controlplanev1alpha2.OpenshiftAssistedControlPlane, architecture string) string {
+func getReleaseImage(oacp controlplanev1alpha3.OpenshiftAssistedControlPlane, architecture string) string {
 	releaseImageRepository, ok := oacp.Annotations[release.ReleaseImageRepositoryOverrideAnnotation]
 	if !ok {
 		releaseImageRepository = ""
@@ -198,7 +229,7 @@ func (r *ClusterDeploymentReconciler) getWorkerNodesCount(ctx context.Context, c
 	count := 0
 
 	mdList := clusterv1.MachineDeploymentList{}
-	if err := r.Client.List(ctx, &mdList, client.MatchingLabels{clusterv1.ClusterNameLabel: cluster.Name}); err != nil {
+	if err := r.List(ctx, &mdList, client.MatchingLabels{clusterv1.ClusterNameLabel: cluster.Name}); err != nil {
 		log.Error(err, "failed to list MachineDeployments", "cluster", cluster.Name)
 		return count
 	}
@@ -213,13 +244,26 @@ func (r *ClusterDeploymentReconciler) updateClusterDeploymentRef(
 	ctx context.Context,
 	cd *hivev1.ClusterDeployment,
 ) error {
-	cd.Spec.ClusterInstallRef = &hivev1.ClusterInstallLocalReference{
+	expectedRef := &hivev1.ClusterInstallLocalReference{
 		Group:   hiveext.Group,
 		Version: hiveext.Version,
 		Kind:    "AgentClusterInstall",
 		Name:    cd.Name,
 	}
-	return r.Client.Update(ctx, cd)
+
+	// Skip update if ClusterInstallRef is already correctly set.
+	// This avoids triggering Hive's immutability validation for spec.clusterMetadata
+	// which rejects any update to ClusterDeployment after installation.
+	if cd.Spec.ClusterInstallRef != nil &&
+		cd.Spec.ClusterInstallRef.Group == expectedRef.Group &&
+		cd.Spec.ClusterInstallRef.Version == expectedRef.Version &&
+		cd.Spec.ClusterInstallRef.Kind == expectedRef.Kind &&
+		cd.Spec.ClusterInstallRef.Name == expectedRef.Name {
+		return nil
+	}
+
+	cd.Spec.ClusterInstallRef = expectedRef
+	return r.Update(ctx, cd)
 }
 
 func ensureClusterImageSet(ctx context.Context, c client.Client, imageSetName string, releaseImage string) error {
@@ -238,22 +282,15 @@ func ensureClusterImageSet(ctx context.Context, c client.Client, imageSetName st
 }
 
 func getClusterNetworks(cluster *clusterv1.Cluster) ([]hiveext.ClusterNetworkEntry, []string) {
-	var clusterNetwork []hiveext.ClusterNetworkEntry
-
-	if cluster.Spec.ClusterNetwork != nil && cluster.Spec.ClusterNetwork.Pods != nil {
-		for _, cidrBlock := range cluster.Spec.ClusterNetwork.Pods.CIDRBlocks {
-			clusterNetwork = append(clusterNetwork, hiveext.ClusterNetworkEntry{CIDR: cidrBlock, HostPrefix: 23})
-		}
-	}
-	var serviceNetwork []string
-	if cluster.Spec.ClusterNetwork != nil && cluster.Spec.ClusterNetwork.Services != nil {
-		serviceNetwork = cluster.Spec.ClusterNetwork.Services.CIDRBlocks
+	clusterNetwork := make([]hiveext.ClusterNetworkEntry, 0, len(cluster.Spec.ClusterNetwork.Pods.CIDRBlocks))
+	for _, cidrBlock := range cluster.Spec.ClusterNetwork.Pods.CIDRBlocks {
+		clusterNetwork = append(clusterNetwork, hiveext.ClusterNetworkEntry{CIDR: cidrBlock, HostPrefix: 23})
 	}
 
-	return clusterNetwork, serviceNetwork
+	return clusterNetwork, cluster.Spec.ClusterNetwork.Services.CIDRBlocks
 }
 
-func getClusterAdditionalManifestRefs(acp controlplanev1alpha2.OpenshiftAssistedControlPlane) []hiveext.ManifestsConfigMapReference {
+func getClusterAdditionalManifestRefs(acp controlplanev1alpha3.OpenshiftAssistedControlPlane) []hiveext.ManifestsConfigMapReference {
 	var additionalManifests []hiveext.ManifestsConfigMapReference
 	if len(acp.Spec.Config.ManifestsConfigMapRefs) > 0 {
 		additionalManifests = append(additionalManifests, acp.Spec.Config.ManifestsConfigMapRefs...)
@@ -268,7 +305,7 @@ func getClusterAdditionalManifestRefs(acp controlplanev1alpha2.OpenshiftAssisted
 
 func (r *ClusterDeploymentReconciler) createImageRegistry(ctx context.Context, registryName, registryNamespace string) error {
 	registryConfigmap := &corev1.ConfigMap{}
-	if err := r.Client.Get(ctx, client.ObjectKey{Name: registryName, Namespace: registryNamespace}, registryConfigmap); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Name: registryName, Namespace: registryNamespace}, registryConfigmap); err != nil {
 		return err
 	}
 
@@ -295,38 +332,84 @@ type InstallConfigOverride struct {
 	Capability configv1.ClusterVersionCapabilitiesSpec `json:"capabilities,omitempty"`
 }
 
-// setACICapabilities will set the install config override annotation in the AgentClusterInstall if there
-// are additional enabled capabilities that need to be defined.
-// For SNO (single node openshift) and non-baremetal platform MNO (multi-node openshift), this is set if
-// the OpenshiftAssistedControlPlane has additional capabilities set.
-// For MNO (multi-node openshift), this is set to the default list for baremetal platform,
-// but the OpenshiftAssistedControlPlane can specify additional capabilities to be appended to this list.
-func setACICapabilities(oacp *controlplanev1alpha2.OpenshiftAssistedControlPlane, aci *hiveext.AgentClusterInstall) error {
-	isBaremetalPlatform := aci.Spec.PlatformType == hiveext.BareMetalPlatformType
-	if isCapabilitiesEmpty(oacp.Spec.Config.Capabilities) && !isBaremetalPlatform {
-		return nil
-	}
-	var installCfgOverride InstallConfigOverride
-	baselineCapability, err := getBaselineCapability(oacp.Spec.Config.Capabilities.BaselineCapability, isBaremetalPlatform)
+// isBaremetalPlatform checks if the AgentClusterInstall is configured for a baremetal platform.
+// Returns true if the platform type is BareMetalPlatformType, false otherwise.
+func isBaremetalPlatform(aci *hiveext.AgentClusterInstall) bool {
+	return aci.Spec.PlatformType == hiveext.BareMetalPlatformType
+}
+
+// getInstallConfigOverride merges install config override from annotations with capabilities-based overrides.
+// It returns the final merged install config override as a JSON string, or empty string if no overrides are needed.
+// The function combines user-provided install config overrides from annotations with automatically
+// generated capabilities configuration based on the cluster platform type.
+func getInstallConfigOverride(oacp *controlplanev1alpha3.OpenshiftAssistedControlPlane, aci *hiveext.AgentClusterInstall) (string, error) {
+	installConfigOverrideStr := oacp.Annotations[controlplanev1alpha3.InstallConfigOverrideAnnotation]
+
+	capabilitiesCfgOverride, err := getInstallConfigOverrideForCapabilities(oacp, aci)
 	if err != nil {
-		return err
+		return "", err
+	}
+	// if no override and no capabilities, no need to merge install config override
+	if installConfigOverrideStr == "" && capabilitiesCfgOverride == "" {
+		return "", nil
+	}
+	if capabilitiesCfgOverride == "" {
+		return installConfigOverrideStr, nil
+	}
+	if installConfigOverrideStr == "" {
+		return capabilitiesCfgOverride, nil
+	}
+
+	installConfigOverrideStr, err = mergeJson(installConfigOverrideStr, capabilitiesCfgOverride)
+	if err != nil {
+		return "", err
+	}
+	return installConfigOverrideStr, nil
+}
+
+// getInstallConfigOverrideForCapabilities generates install config override JSON for OpenShift capabilities configuration.
+// It automatically sets appropriate capabilities based on the platform type:
+// - Baremetal platforms: Sets baseline to "None" and includes default baremetal capabilities
+// - Non-baremetal platforms: Sets baseline to "vCurrent" and only includes user-specified capabilities
+// Returns empty string if no capabilities configuration is needed (non-baremetal with empty capabilities).
+func getInstallConfigOverrideForCapabilities(oacp *controlplanev1alpha3.OpenshiftAssistedControlPlane, aci *hiveext.AgentClusterInstall) (string, error) {
+	var installCfgOverride InstallConfigOverride
+	if isCapabilitiesEmpty(oacp.Spec.Config.Capabilities) && !isBaremetalPlatform(aci) {
+		return "", nil
+	}
+	baselineCapability, err := getBaselineCapability(oacp.Spec.Config.Capabilities.BaselineCapability, isBaremetalPlatform(aci))
+	if err != nil {
+		return "", err
 	}
 	installCfgOverride.Capability.BaselineCapabilitySet = configv1.ClusterVersionCapabilitySet(baselineCapability)
 
-	additionalEnabledCapabilities := getAdditionalCapabilities(oacp.Spec.Config.Capabilities.AdditionalEnabledCapabilities, isBaremetalPlatform)
+	additionalEnabledCapabilities := getAdditionalCapabilities(oacp.Spec.Config.Capabilities.AdditionalEnabledCapabilities, isBaremetalPlatform(aci))
 	installCfgOverride.Capability.AdditionalEnabledCapabilities = additionalEnabledCapabilities
 
-	installCfgOverrideStr, err := json.Marshal(installCfgOverride)
+	installCfgOverrideBytes, err := json.Marshal(installCfgOverride)
 	if err != nil {
-		return err
+		return "", err
 	}
+	installCfgOverrideStr := string(installCfgOverrideBytes)
+	return installCfgOverrideStr, nil
+}
 
-	if aci.Annotations == nil {
-		aci.Annotations = make(map[string]string)
+// mergeJson merges two JSON strings by unmarshaling them into maps and combining them.
+// The second JSON takes precedence over the first in case of key conflicts.
+// Returns the merged JSON as a string, error if unmarshalling or marshalling fails.
+func mergeJson(json1, json2 string) (string, error) {
+	var merged map[string]interface{}
+	if err := json.Unmarshal([]byte(json1), &merged); err != nil {
+		return "", fmt.Errorf("failed to unmarshal json1: %w", err)
 	}
-
-	aci.Annotations[InstallConfigOverrides] = string(installCfgOverrideStr)
-	return nil
+	if err := json.Unmarshal([]byte(json2), &merged); err != nil {
+		return "", fmt.Errorf("failed to unmarshal json2: %w", err)
+	}
+	mergedJson, err := json.Marshal(merged)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal merged json: %w", err)
+	}
+	return string(mergedJson), nil
 }
 
 func getBaselineCapability(capability string, isBaremetalPlatform bool) (string, error) {
@@ -372,6 +455,6 @@ func getAdditionalCapabilities(specifiedAdditionalCapabilities []string, isBarem
 	return additionalCapabilitiesList
 }
 
-func isCapabilitiesEmpty(capabilities controlplanev1alpha2.Capabilities) bool {
-	return equality.Semantic.DeepEqual(capabilities, controlplanev1alpha2.Capabilities{})
+func isCapabilitiesEmpty(capabilities controlplanev1alpha3.Capabilities) bool {
+	return equality.Semantic.DeepEqual(capabilities, controlplanev1alpha3.Capabilities{})
 }

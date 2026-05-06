@@ -1,4 +1,32 @@
 ---
+# Setup and run tests playbook
+#
+# Environment variables:
+#   OPENSHIFT_VERSION=4.x.y  - OpenShift release to test (default: 4.20.0)
+#   RHCOS_IMAGE_URL=<url>    - RHCOS image location (default: 4.20.0 nutanix qcow2)
+#   SKIP_BUILD=true          - Skip building provider images
+#   SKIP_CAPI_INSTALL=true   - Skip CAPI/MCE component installation (dependencies still installed)
+#   SKIP_CLUSTER=true        - Skip cluster manifest application and assertions
+#
+# Examples:
+#   # Full test run (default)
+#   ansible-playbook -i inventories/local_host.yaml run_test.yaml
+#
+#   # Test a specific OCP version with matching RHCOS image
+#   OPENSHIFT_VERSION=4.21.9 RHCOS_IMAGE_URL=https://mirror.openshift.com/.../rhcos-4.21.3-x86_64-nutanix.x86_64.qcow2 \
+#     ansible-playbook -i inventories/local_host.yaml run_test.yaml
+#
+#   # Skip image build (use pre-built images)
+#   SKIP_BUILD=true ansible-playbook -i inventories/local_host.yaml run_test.yaml
+#
+#   # Demo mode: setup everything for manual MCE deployment and cluster provisioning
+#   # (infra, dependencies, BMH setup - but skip CAPI install and cluster provisioning)
+#   SKIP_BUILD=true SKIP_CAPI_INSTALL=true SKIP_CLUSTER=true \
+#     ansible-playbook -i inventories/local_host.yaml run_test.yaml
+#
+#   # Deploy components but skip cluster provisioning
+#   SKIP_CLUSTER=true ansible-playbook -i inventories/local_host.yaml run_test.yaml
+
 - name: Setup and run tests
   hosts: test_runner
   vars:
@@ -10,23 +38,21 @@
     example_manifest: "{{ cluster_topology }}-example.yaml.j2"
     default_assisted_service_image: "quay.io/edge-infrastructure/assisted-service"
     default_infrastructure_operator_image: "quay.io/edge-infrastructure/assisted-service"
-    default_assisted_service_el8_image: "quay.io/edge-infrastructure/assisted-service-el8"
-    default_assisted_image_service_image: "quay.io/edge-infrastructure/assisted-image-service"
     default_assisted_installer_agent_image: "quay.io/edge-infrastructure/assisted-installer-agent"
     default_assisted_installer_controller_image: "quay.io/edge-infrastructure/assisted-installer-controller"
     default_assisted_installer_image: "quay.io/edge-infrastructure/assisted-installer"
-    default_assisted_service_el8_version: "sha256:fc5c31be9a528a10485a5d2c7ca82d17cf2a560948e3efa5c0042a5565dc1acf"
-    default_assisted_image_service_version: "sha256:c9c0623baa3d364131720914d68fa6267d8a242af1de3a7c4a46bb1d18a1fac4"
-    default_assisted_installer_agent_version: "sha256:fc1abc80463b74917c09c3f3393b97ea1175c6207de616def2a8a25419049cae"
-    default_assisted_installer_controller_version: "sha256:c707d06e0d232a0a067b30ede5321d3212609dd1281798952866bc4712b4578a"
-    default_infrastructure_operator_version: "sha256:a78af04976f68f4e33b3a53001c959c15b7c350cb2b8836004066a40fd1e261d"
-    default_assisted_installer_version: "sha256:5cf1b47fc8bc129fa5cf109c8b9759b3fdc033643ee4f2f1d8bcdf0de8ddfaca"
-    default_assisted_service_version: "sha256:ef7c53fe1dee4c0a6616c53d7d84c3c9b4051d00048b38d421dcf1ceb6c58aea"
-    capi_version: "{{ lookup('ansible.builtin.env', 'CAPI_VERSION', default='v1.9.6') }}"
-    capm3_version: "{{ lookup('ansible.builtin.env', 'CAPM3_VERSION', default='v1.9.3') }}"
+    default_assisted_installer_agent_version: "sha256:58732e1b4c26d5d4c8c0a662c82e388c02684800925f4b4db4447dce8010bf14"
+    default_assisted_installer_controller_version: "sha256:d4755a824f92c211df890ff8e65523d085dcbd393aeeb314ff5a024eb5418257"
+    default_infrastructure_operator_version: "sha256:c82660f92842d99fdd12507c0c61a39bfc25f04e71b5ab69c265fb749be3518c"
+    default_assisted_installer_version: "sha256:c31f3f58d0776edd6726f44858f93a95dcb8e179706297d263e32291a854df54"
+    default_assisted_service_version: "sha256:c82660f92842d99fdd12507c0c61a39bfc25f04e71b5ab69c265fb749be3518c"
+    capi_version: "{{ lookup('ansible.builtin.env', 'CAPI_VERSION', default='v1.11.3') }}"
+    capm3_version: "{{ lookup('ansible.builtin.env', 'CAPM3_VERSION', default='v1.11.2') }}"
     dist_dir: "{{ lookup('ansible.builtin.env', 'DIST_DIR') }}"
     src_dir: "/tmp/capbcoa"
     kind_cluster_name: capi-baremetal-provider
+    kind_network_prefix: "{{ lookup('ansible.builtin.env', 'KIND_NETWORK_PREFIX', default='10.89.0') }}"
+    kubectl_version: "{{ lookup('ansible.builtin.env', 'KUBECTL_VERSION', default='v1.31.4') }}"
     ssh_authorized_key: "{{ lookup('ansible.builtin.env', 'SSH_AUTHORIZED_KEY') }}"
     pullsecret: "{{ lookup('ansible.builtin.env', 'PULLSECRET') }}"
     container_tag: "{{ lookup('ansible.builtin.env', 'CONTAINER_TAG', default='local')}}"
@@ -39,18 +65,41 @@
     low_retries: 1
     extra_paths:
       - /usr/local/bin
+    openshift_version: >-
+      {{ lookup('ansible.builtin.env', 'OPENSHIFT_VERSION') | default('4.20.0', true) }}
+    default_rhcos_image_url: >-
+      https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.20/4.20.0/rhcos-4.20.0-x86_64-nutanix.x86_64.qcow2
+    rhcos_image_url: >-
+      {{ lookup('ansible.builtin.env', 'RHCOS_IMAGE_URL') | default(default_rhcos_image_url, true) }}
+    rhcos_checksum_url: >-
+      {{ lookup('ansible.builtin.env', 'RHCOS_CHECKSUM_URL')
+         | default(rhcos_image_url | dirname ~ '/sha256sum.txt', true) }}
+    # Conditional execution flags
+    skip_build: "{{ lookup('ansible.builtin.env', 'SKIP_BUILD', default='false') | lower in ['true', '1', 'yes'] }}"
+    skip_capi_install: "{{ lookup('ansible.builtin.env', 'SKIP_CAPI_INSTALL', default='false') | lower in ['true', '1', 'yes'] }}"
+    skip_cluster: "{{ lookup('ansible.builtin.env', 'SKIP_CLUSTER', default='false') | lower in ['true', '1', 'yes'] }}"
   environment:
     PATH: "{{ extra_paths | join(':') }}:{{ ansible_env.PATH }}"
   roles:
+    # Infrastructure setup (always runs)
     - system_dependencies
     - sourcecode_setup
     - network_setup
     - baremetal_emulation
     - kind_setup
-    - build_images
+    # Build provider images (skip if skip_build)
+    - role: build_images
+      when: not skip_build
+    # Components install - always runs, but respects skip_capi_install internally
+    # Always installs dependencies (cert-manager, prometheus, ironic, BMO, MetalLB, nginx)
+    # Skips CAPI/MCE components if skip_capi_install=true
     - components_install
+    # BMH setup (always runs - needed for demo and full test)
     - bmh_setup
-    - cluster_install
-    - assert_install
+    # Cluster provisioning (skip if skip_cluster)
+    - role: cluster_install
+      when: not skip_cluster
+    - role: assert_install
+      when: not skip_cluster
     - role: assert_upgrade
-      when: "upgrade_to_version is defined"
+      when: not skip_cluster and upgrade_to_version is defined

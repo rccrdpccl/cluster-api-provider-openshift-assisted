@@ -5,27 +5,30 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
+	config_types "github.com/coreos/ignition/v2/config/v3_1/types"
 	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/bootstrap/internal/ignition"
 	logutil "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/util/log"
 
-	bootstrapv1alpha1 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/bootstrap/api/v1alpha1"
+	bootstrapv1alpha2 "github.com/openshift-assisted/cluster-api-provider-openshift-assisted/bootstrap/api/v1alpha2"
 	"github.com/openshift-assisted/cluster-api-provider-openshift-assisted/util"
 	aiv1beta1 "github.com/openshift/assisted-service/api/v1beta1"
 	"github.com/openshift/assisted-service/models"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// validVarNamePattern matches valid shell variable names to prevent injection attacks
+var validVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 const (
-	retryAfter               = 20 * time.Second
-	metal3ProviderIDLabelKey = "metal3.io/uuid"
+	retryAfter = 20 * time.Second
 )
 
 // AgentReconciler reconciles an Agent object
@@ -33,6 +36,8 @@ type AgentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+// +kubebuilder:rbac:groups=agent-install.openshift.io,resources=agents,verbs=delete;get;list;update;watch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -45,31 +50,34 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	agent := &aiv1beta1.Agent{}
-	if err := r.Client.Get(ctx, req.NamespacedName, agent); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, agent); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	machine, err := r.getMachineFromAgent(ctx, agent)
 	if err != nil {
-		log.Error(err, "can't find machine for agent", "agent", agent)
+		log.Error(err, "cannot find machine for agent", "agent", agent)
 		return ctrl.Result{}, err
 	}
 
-	if machine.Spec.Bootstrap.ConfigRef == nil {
-		log.V(logutil.TraceLevel).Info("agent doesn't belong to CAPI cluster", "agent", agent)
+	if !machine.Spec.Bootstrap.ConfigRef.IsDefined() {
+		log.V(logutil.DebugLevel).Info("agent doesn't belong to CAPI cluster", "agent", agent)
 		return ctrl.Result{}, nil
 	}
 
-	config, err := r.ensureBootstrapConfigReference(ctx, machine, agent.Name)
-	if err != nil {
-		log.Error(err, "failed to ensure Agent Bootstrap Config references this agent")
+	config := &bootstrapv1alpha2.OpenshiftAssistedConfig{}
+	if err := r.Get(ctx,
+		client.ObjectKey{
+			Name:      machine.Spec.Bootstrap.ConfigRef.Name,
+			Namespace: machine.Namespace},
+		config); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, r.setAgentFields(ctx, agent, machine, config)
 }
 
-func (r *AgentReconciler) setAgentFields(ctx context.Context, agent *aiv1beta1.Agent, machine *clusterv1.Machine, config *bootstrapv1alpha1.OpenshiftAssistedConfig) error {
+func (r *AgentReconciler) setAgentFields(ctx context.Context, agent *aiv1beta1.Agent, machine *clusterv1.Machine, config *bootstrapv1alpha2.OpenshiftAssistedConfig) error {
 	logger := ctrl.LoggerFrom(ctx)
 	role := models.HostRoleWorker
 	if _, ok := machine.Labels[clusterv1.MachineControlPlaneLabel]; ok {
@@ -86,12 +94,14 @@ func (r *AgentReconciler) setAgentFields(ctx context.Context, agent *aiv1beta1.A
 		return err
 	}
 
-	// Check if any changes are needed
-	if agent.Spec.Role == role &&
-		agent.Spec.IgnitionConfigOverrides == ignitionConfigOverrides &&
-		agent.Spec.Approved == approvable {
+	specModified := agent.Spec.Role != role ||
+		agent.Spec.IgnitionConfigOverrides != ignitionConfigOverrides ||
+		agent.Spec.Approved != approvable
+
+	if !specModified {
 		return nil
 	}
+
 	agent.Spec.Role = role
 	agent.Spec.IgnitionConfigOverrides = ignitionConfigOverrides
 	agent.Spec.Approved = approvable
@@ -102,16 +112,17 @@ func (r *AgentReconciler) setAgentFields(ctx context.Context, agent *aiv1beta1.A
 	}
 	jsonBytes, err := json.Marshal(installerArgs)
 	if err != nil {
-		logger.V(logutil.InfoLevel).Info("failed to marshal installer args", "error", err)
-	} else {
-		agent.Spec.InstallerArgs = string(jsonBytes)
+		logger.V(logutil.DebugLevel).Info("failed to marshal installer args", "error", err)
+		return r.Update(ctx, agent)
 	}
-	return r.Client.Update(ctx, agent)
+
+	agent.Spec.InstallerArgs = string(jsonBytes)
+	return r.Update(ctx, agent)
 }
 
 func (r *AgentReconciler) canApproveAgent(ctx context.Context, agent *aiv1beta1.Agent) (bool, error) {
 	agentList := &aiv1beta1.AgentList{}
-	if err := r.Client.List(ctx, agentList, client.MatchingLabels{aiv1beta1.InfraEnvNameLabel: agent.Labels[aiv1beta1.InfraEnvNameLabel]}); err != nil {
+	if err := r.List(ctx, agentList, client.MatchingLabels{aiv1beta1.InfraEnvNameLabel: agent.Labels[aiv1beta1.InfraEnvNameLabel]}); err != nil {
 		return false, err
 	}
 
@@ -119,7 +130,7 @@ func (r *AgentReconciler) canApproveAgent(ctx context.Context, agent *aiv1beta1.
 		if existingAgent.Name != agent.Name &&
 			existingAgent.Spec.Approved {
 			log := ctrl.LoggerFrom(ctx)
-			log.V(logutil.WarningLevel).Info(
+			log.V(logutil.DebugLevel).Info(
 				"not approving agent: another agent is already approved with the same infraenv",
 				"agent", agent.Name,
 				"infraenv", agent.Labels[aiv1beta1.InfraEnvNameLabel])
@@ -130,32 +141,185 @@ func (r *AgentReconciler) canApproveAgent(ctx context.Context, agent *aiv1beta1.
 	return true, nil
 }
 
-func getIgnitionConfig(config *bootstrapv1alpha1.OpenshiftAssistedConfig) (string, error) {
-	// get labels and set them as KUBELET_EXTRA_LABELS in ignition
-	extraLabels := strings.Join(config.Spec.NodeRegistration.KubeletExtraLabels, ",")
-	content := `#!/bin/bash
-echo "CUSTOM_KUBELET_LABELS=` + extraLabels + `" | tee -a /etc/kubernetes/kubelet-env >/dev/null
-`
-	b64Content := base64.StdEncoding.EncodeToString([]byte(content))
-	kubeletCustomLabels := ignition.CreateIgnitionFile("/usr/local/bin/kubelet_custom_labels",
+// CreateKubeletCustomLabelsFile generates a kubelet_custom_labels script file for ignition.
+// The script writes kubelet labels and provider ID to /etc/kubernetes/kubelet-env and
+// /run/kubelet-provider-id. Returns nil if no labels or provider ID are configured.
+func CreateKubeletCustomLabelsFile(kubeletExtraLabels []string, providerID string) (*config_types.File, error) {
+	dynamic, static, err := parseLabels(kubeletExtraLabels)
+	if err != nil {
+		return nil, fmt.Errorf("invalid kubelet extra labels: %w", err)
+	}
+
+	providerIDVarName, providerIDStatic, err := parseEnvVarRef(providerID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid providerID: %w", err)
+	}
+
+	// Trim whitespace from static providerID
+	providerIDStatic = strings.TrimSpace(providerIDStatic)
+
+	// If no labels or provider ID, return nil
+	if len(dynamic) == 0 && len(static) == 0 && providerIDVarName == "" && providerIDStatic == "" {
+		return nil, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("#!/bin/bash\n")
+
+	// Collect all dynamic variables that need to be resolved
+	dynamicVars := make(map[string]struct{})
+	for _, varName := range dynamic {
+		dynamicVars[varName] = struct{}{}
+	}
+	if providerIDVarName != "" {
+		dynamicVars[providerIDVarName] = struct{}{}
+	}
+
+	// Resolve each dynamic variable from metadata_env
+	for varName := range dynamicVars {
+		fmt.Fprintf(&sb, `%s=""
+if [ -f /etc/metadata_env ]; then
+    %s=$(/usr/bin/grep "^%s=" /etc/metadata_env | /usr/bin/cut -d'=' -f2-)
+fi
+`, varName, varName, varName)
+	}
+
+	// Build labels string: static labels as-is, dynamic labels use ${VAR}
+	labelParts := make([]string, 0, len(static)+len(dynamic))
+	for key, value := range static {
+		labelParts = append(labelParts, key+"="+value)
+	}
+	for key, varName := range dynamic {
+		labelParts = append(labelParts, key+"=${"+varName+"}")
+	}
+
+	fmt.Fprintf(&sb, `echo "CUSTOM_KUBELET_LABELS=%s" | tee -a /etc/kubernetes/kubelet-env >/dev/null
+`, strings.Join(labelParts, ","))
+
+	// Write KUBELET_PROVIDERID and /run/kubelet-provider-id if specified
+	if providerIDVarName != "" || providerIDStatic != "" {
+		// Determine the provider ID value for KUBELET_PROVIDERID env var
+		var providerIDEnvValue string
+		if providerIDVarName != "" {
+			providerIDEnvValue = fmt.Sprintf("${%s}", providerIDVarName)
+		} else {
+			providerIDEnvValue = shellEscapeSingleQuote(providerIDStatic)
+		}
+
+		fmt.Fprintf(&sb, `echo "KUBELET_PROVIDERID=%s" | tee -a /etc/kubernetes/kubelet-env >/dev/null
+`, providerIDEnvValue)
+
+		// Determine the echo command for /run/kubelet-provider-id file
+		var providerIDFileCmd string
+		if providerIDVarName != "" {
+			providerIDFileCmd = fmt.Sprintf(`echo "${%s}" > /run/kubelet-provider-id`, providerIDVarName)
+		} else {
+			providerIDFileCmd = fmt.Sprintf(`echo '%s' > /run/kubelet-provider-id`, shellEscapeSingleQuote(providerIDStatic))
+		}
+
+		fmt.Fprintf(&sb, "%s\n", providerIDFileCmd)
+	}
+
+	b64Content := base64.StdEncoding.EncodeToString([]byte(sb.String()))
+	file := ignition.CreateIgnitionFile("/usr/local/bin/kubelet_custom_labels",
 		"root", "data:text/plain;charset=utf-8;base64,"+b64Content, 493, true)
-	return ignition.GetIgnitionConfigOverrides(kubeletCustomLabels)
+	return &file, nil
 }
 
-func (r *AgentReconciler) ensureBootstrapConfigReference(ctx context.Context, machine *clusterv1.Machine, agentName string) (*bootstrapv1alpha1.OpenshiftAssistedConfig, error) {
-	config := &bootstrapv1alpha1.OpenshiftAssistedConfig{}
-	if err := r.Client.Get(ctx,
-		client.ObjectKey{
-			Name:      machine.Spec.Bootstrap.ConfigRef.Name,
-			Namespace: machine.Spec.Bootstrap.ConfigRef.Namespace},
-		config); err != nil {
-		return nil, err
+// getIgnitionConfig builds the install-time (post-discovery) ignition config for the agent:
+// node registration (hostname, kubelet labels, provider ID) plus any override from the
+// openshiftassistedconfig.cluster.x-k8s.io/ignition-override annotation.
+func getIgnitionConfig(config *bootstrapv1alpha2.OpenshiftAssistedConfig) (string, error) {
+	kubeletCustomLabelsFile, err := CreateKubeletCustomLabelsFile(
+		config.Spec.NodeRegistration.KubeletExtraLabels,
+		config.Spec.NodeRegistration.ProviderID,
+	)
+	if err != nil {
+		return "", err
 	}
-	if config.Status.AgentRef == nil {
-		config.Status.AgentRef = &corev1.LocalObjectReference{Name: agentName}
-		return config, r.Client.Status().Update(ctx, config)
+
+	opts := ignition.IgnitionOptions{
+		NodeNameEnvVar:          config.Spec.NodeRegistration.Name,
+		PreBootstrapCommands:    config.Spec.PreBootstrapCommands,
+		PostBootstrapCommands:   config.Spec.PostBootstrapCommands,
+		SentinelDirectory:       config.Spec.BootstrapCommandSentinelDir,
+		ProviderID:              config.Spec.NodeRegistration.ProviderID,
+		KubeletCustomLabelsFile: kubeletCustomLabelsFile,
 	}
-	return config, nil
+	baseIgnition, err := ignition.GetIgnitionConfigOverrides(opts)
+	if err != nil {
+		return "", err
+	}
+	// Merge in install-time ignition override from annotation (openshiftassistedconfig.cluster.x-k8s.io/ignition-override)
+	if override, ok := config.GetAnnotations()[bootstrapv1alpha2.IgnitionOverrideAnnotation]; ok && override != "" && json.Valid([]byte(override)) {
+		merged, mergeErr := ignition.MergeIgnitionConfigStrings(baseIgnition, override)
+		if mergeErr != nil {
+			return "", fmt.Errorf("invalid %s annotation: %w", bootstrapv1alpha2.IgnitionOverrideAnnotation, mergeErr)
+		}
+		return merged, nil
+	}
+	return baseIgnition, nil
+}
+
+// parseEnvVarRef parses a value that may be an environment variable reference.
+// If the value starts with $, it's treated as a variable reference and the variable name is returned.
+// Otherwise, the static value is returned.
+// Returns (varName, staticValue, error) where only one of varName or staticValue is non-empty.
+func parseEnvVarRef(value string) (varName, staticValue string, err error) {
+	if value == "" {
+		return "", "", nil
+	}
+
+	if !strings.HasPrefix(value, "$") {
+		return "", value, nil
+	}
+
+	// Strip $, {, } to get the variable name
+	varName = strings.TrimPrefix(value, "$")
+	varName = strings.TrimPrefix(varName, "{")
+	varName = strings.TrimSuffix(varName, "}")
+
+	// Validate variable name to prevent shell injection
+	if !validVarNamePattern.MatchString(varName) {
+		return "", "", fmt.Errorf("invalid variable name %q: must contain only letters, digits, and underscores, and start with a letter or underscore", varName)
+	}
+
+	return varName, "", nil
+}
+
+// shellEscapeSingleQuote escapes a string for safe use within single quotes in a shell script.
+// It replaces each single quote with '"'"' which ends the current single-quoted string,
+// adds an escaped single quote, and starts a new single-quoted string.
+func shellEscapeSingleQuote(s string) string {
+	return strings.ReplaceAll(s, "'", `'"'"'`)
+}
+
+// parseLabels splits labels into dynamic (variable) and static maps.
+// If value starts with $, strip $, {, } to get the variable name.
+// Returns an error if a variable name is invalid (must match ^[A-Za-z_][A-Za-z0-9_]*$).
+func parseLabels(labels []string) (dynamic, static map[string]string, err error) {
+	dynamic = make(map[string]string)
+	static = make(map[string]string)
+
+	for _, label := range labels {
+		parts := strings.SplitN(label, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key, value := parts[0], parts[1]
+
+		varName, staticValue, err := parseEnvVarRef(value)
+		if err != nil {
+			return nil, nil, fmt.Errorf("in label %q: %w", label, err)
+		}
+
+		if varName != "" {
+			dynamic[key] = varName
+			continue
+		}
+		static[key] = staticValue
+	}
+	return dynamic, static, nil
 }
 
 func (r *AgentReconciler) getMachineFromAgent(ctx context.Context, agent *aiv1beta1.Agent) (*clusterv1.Machine, error) {
@@ -164,9 +328,10 @@ func (r *AgentReconciler) getMachineFromAgent(ctx context.Context, agent *aiv1be
 		return nil, fmt.Errorf("no %s label on Agent %s", aiv1beta1.InfraEnvNameLabel, agent.GetNamespace()+"/"+agent.GetName())
 	}
 	infraEnv := aiv1beta1.InfraEnv{}
-	if err := r.Client.Get(ctx, client.ObjectKey{Name: infraEnvName, Namespace: agent.GetNamespace()}, &infraEnv); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Name: infraEnvName, Namespace: agent.GetNamespace()}, &infraEnv); err != nil {
 		return nil, err
 	}
+
 	machine := &clusterv1.Machine{}
 	if err := util.GetTypedOwner(ctx, r.Client, &infraEnv, machine); err != nil {
 		return nil, err
